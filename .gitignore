@@ -1,1 +1,3 @@
 .deriveddata*/
+.DS_Store
+app-backups/
