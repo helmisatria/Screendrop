@@ -8,7 +8,7 @@ import Foundation
 /// Page space is the screenshot's own pixel space: y-down, origin at the image's top-left, one
 /// unit per image pixel. That makes export a 1:1 draw and lets the canvas be a pure camera on top,
 /// which is what gives every tool the same rotate/resize behaviour for free.
-struct AnnoShapeID: Hashable, Codable {
+nonisolated struct AnnoShapeID: Hashable, Codable {
     let raw: String
     init(_ raw: String = UUID().uuidString) { self.raw = raw }
 }

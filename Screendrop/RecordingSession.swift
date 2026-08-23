@@ -393,7 +393,7 @@ nonisolated struct PointerArtwork: Codable, Sendable, Equatable {
 }
 
 extension PointerCaptureFile {
-    private enum CodingKeys: String, CodingKey {
+    nonisolated private enum CodingKeys: String, CodingKey {
         case formatVersion
         case travel
         case presses
@@ -402,7 +402,7 @@ extension PointerCaptureFile {
         case isSanitized
     }
 
-    init(from decoder: any Decoder) throws {
+    nonisolated init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         formatVersion = try container.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
         travel = try container.decodeIfPresent([PointerTravelSample].self, forKey: .travel) ?? []
@@ -418,7 +418,7 @@ extension PointerCaptureFile {
         isSanitized = try container.decodeIfPresent(Bool.self, forKey: .isSanitized) ?? false
     }
 
-    func encode(to encoder: any Encoder) throws {
+    nonisolated func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(formatVersion, forKey: .formatVersion)
         try container.encode(travel, forKey: .travel)
@@ -430,7 +430,7 @@ extension PointerCaptureFile {
 }
 
 extension PointerTravelSample {
-    private enum CodingKeys: String, CodingKey {
+    nonisolated private enum CodingKeys: String, CodingKey {
         case time
         case x
         case y
@@ -438,7 +438,7 @@ extension PointerTravelSample {
         case artworkID
     }
 
-    init(from decoder: any Decoder) throws {
+    nonisolated init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         time = try container.decode(TimeInterval.self, forKey: .time)
         x = try container.decode(Double.self, forKey: .x)
@@ -450,7 +450,7 @@ extension PointerTravelSample {
         artworkID = try container.decodeIfPresent(String.self, forKey: .artworkID)
     }
 
-    func encode(to encoder: any Encoder) throws {
+    nonisolated func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(time, forKey: .time)
         try container.encode(x, forKey: .x)

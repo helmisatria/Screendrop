@@ -416,7 +416,7 @@ nonisolated struct PointerTimeline: Sendable {
 // MARK: - Pointer artwork metrics
 
 extension PointerArtwork {
-    var normalizedAnchor: CGPoint {
+    nonisolated var normalizedAnchor: CGPoint {
         let width = max(referenceSize.width, 1)
         let height = max(referenceSize.height, 1)
         return CGPoint(
@@ -425,7 +425,7 @@ extension PointerArtwork {
         )
     }
 
-    var aspectRatio: CGFloat {
+    nonisolated var aspectRatio: CGFloat {
         guard referenceSize.width > 0, referenceSize.height > 0 else {
             return 1
         }
@@ -434,7 +434,7 @@ extension PointerArtwork {
 
     /// Preserve relative system-cursor sizes without allowing drag artwork or
     /// malformed metadata to dominate the composition.
-    var intrinsicScale: CGFloat {
+    nonisolated var intrinsicScale: CGFloat {
         guard referenceSize.height > 0 else { return 1 }
         return min(max(CGFloat(referenceSize.height / 16), 0.75), 2.5)
     }

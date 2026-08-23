@@ -64,7 +64,7 @@ nonisolated enum PointerPressEffectStyle {
 
 // MARK: - Keystroke caption placement
 
-enum RecordingKeystrokePlacement: String, Codable, CaseIterable, Identifiable, Sendable {
+nonisolated enum RecordingKeystrokePlacement: String, Codable, CaseIterable, Identifiable, Sendable {
     case topLeft
     case topCenter
     case topRight
