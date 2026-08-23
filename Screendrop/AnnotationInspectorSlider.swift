@@ -16,6 +16,7 @@ struct InspectorValueFormat {
     let showsPositiveSign: Bool
     let step: CGFloat
     let acceptedSuffixes: [String]
+    let usesDotDecimalSeparator: Bool
 
     static let integer = InspectorValueFormat(
         multiplier: 1,
@@ -23,7 +24,8 @@ struct InspectorValueFormat {
         suffix: "",
         showsPositiveSign: false,
         step: 1,
-        acceptedSuffixes: []
+        acceptedSuffixes: [],
+        usesDotDecimalSeparator: false
     )
 
     static let pixels = InspectorValueFormat(
@@ -32,7 +34,8 @@ struct InspectorValueFormat {
         suffix: " px",
         showsPositiveSign: false,
         step: 1,
-        acceptedSuffixes: ["pixels", "pixel", "px"]
+        acceptedSuffixes: ["pixels", "pixel", "px"],
+        usesDotDecimalSeparator: false
     )
 
     static func percent(
@@ -45,7 +48,8 @@ struct InspectorValueFormat {
             suffix: "%",
             showsPositiveSign: signed,
             step: step(forFractionDigits: fractionDigits) / 100,
-            acceptedSuffixes: ["%"]
+            acceptedSuffixes: ["%"],
+            usesDotDecimalSeparator: false
         )
     }
 
@@ -56,7 +60,8 @@ struct InspectorValueFormat {
             suffix: "°",
             showsPositiveSign: signed,
             step: 1,
-            acceptedSuffixes: ["degrees", "degree", "deg", "°"]
+            acceptedSuffixes: ["degrees", "degree", "deg", "°"],
+            usesDotDecimalSeparator: false
         )
     }
 
@@ -67,7 +72,8 @@ struct InspectorValueFormat {
             suffix: "",
             showsPositiveSign: false,
             step: step(forFractionDigits: fractionDigits),
-            acceptedSuffixes: []
+            acceptedSuffixes: [],
+            usesDotDecimalSeparator: false
         )
     }
 
@@ -78,7 +84,8 @@ struct InspectorValueFormat {
             suffix: "×",
             showsPositiveSign: false,
             step: step(forFractionDigits: fractionDigits),
-            acceptedSuffixes: ["×", "x"]
+            acceptedSuffixes: ["×", "x"],
+            usesDotDecimalSeparator: true
         )
     }
 
@@ -108,7 +115,12 @@ struct InspectorValueFormat {
 
         numericText = numericText.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        if usesDotDecimalSeparator {
+            numericText = numericText.replacingOccurrences(of: ",", with: ".")
+        }
+
         guard let parsed = try? FloatingPointFormatStyle<Double>.number
+            .locale(numberLocale)
             .parseStrategy
             .parse(numericText), parsed.isFinite else {
             return nil
@@ -123,7 +135,14 @@ struct InspectorValueFormat {
             .number
                 .precision(.fractionLength(fractionDigits))
                 .grouping(.never)
+                .locale(numberLocale)
         )
+    }
+
+    private var numberLocale: Locale {
+        usesDotDecimalSeparator
+            ? Locale(identifier: "en_US_POSIX")
+            : .autoupdatingCurrent
     }
 
     private func roundedForDisplay(_ value: CGFloat) -> CGFloat {
@@ -418,6 +437,7 @@ struct InspectorSlider: View {
         if focusedPart == .value {
             beginValueEditing()
         } else {
+            valueSelection = nil
             draftText = format.displayString(for: value)
         }
     }
@@ -425,8 +445,9 @@ struct InspectorSlider: View {
     private func beginValueEditing() {
         let editingText = format.editingString(for: value)
         editingBaselineText = editingText
+        valueSelection = nil
         draftText = editingText
-        valueSelection = TextSelection(range: editingText.startIndex..<editingText.endIndex)
+        valueSelection = TextSelection(range: draftText.startIndex..<draftText.endIndex)
     }
 
     private func commitDraftText() {
