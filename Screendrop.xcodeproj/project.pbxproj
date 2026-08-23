@@ -15,9 +15,22 @@
 		3163891D2F9DC05A002A7AF3 /* Screendrop.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Screendrop.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		31CA951C2FCB2749003035C6 /* Exceptions for "Screendrop" folder in "Screendrop" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 3163891C2F9DC05A002A7AF3 /* Screendrop */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		3163891F2F9DC05A002A7AF3 /* Screendrop */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				31CA951C2FCB2749003035C6 /* Exceptions for "Screendrop" folder in "Screendrop" target */,
+			);
 			path = Screendrop;
 			sourceTree = "<group>";
 		};
@@ -282,10 +295,6 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Screendrop/Vendor/DeepFilterNet/lib",
-				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 0.31.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fayazahmed.Screendrop;
@@ -323,10 +332,6 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
-				);
-				LIBRARY_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Screendrop/Vendor/DeepFilterNet/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 0.31.3;
@@ -429,10 +434,6 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
-				);
-				LIBRARY_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Screendrop/Vendor/DeepFilterNet/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 0.31.3;
