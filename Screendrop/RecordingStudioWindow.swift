@@ -1340,6 +1340,7 @@ private struct StudioTimelineEditor: View {
     @State private var viewportWidth: CGFloat = 1
     @State private var scrollX: CGFloat = 0
     @State private var scrollPosition = ScrollPosition(edge: .leading)
+    @State private var trimDisplayTimeline: RecordingClipTimeline?
 
     /// Step per zoom button press / keyboard shortcut.
     private static let zoomStep: Double = 1.6
@@ -1350,9 +1351,26 @@ private struct StudioTimelineEditor: View {
     private var scale: StudioTimelineScale {
         StudioTimelineScale(
             viewportWidth: viewportWidth,
-            duration: model.duration,
+            duration: displayTimeline.duration,
             zoom: zoom
         )
+    }
+
+    private var displayTimeline: RecordingClipTimeline {
+        trimDisplayTimeline ?? model.clipTimeline
+    }
+
+    private var displayPlayheadTime: TimeInterval {
+        guard let trimDisplayTimeline else { return model.currentTime }
+        let sourceTime = model.clipTimeline.sourceTime(at: model.currentTime)
+        return trimDisplayTimeline.editorTime(forSourceTime: sourceTime) ?? model.currentTime
+    }
+
+    private var displayHoverTime: TimeInterval? {
+        guard let hoverTime = model.timelineHoverTime else { return nil }
+        guard let trimDisplayTimeline else { return hoverTime }
+        let sourceTime = model.clipTimeline.sourceTime(at: hoverTime)
+        return trimDisplayTimeline.editorTime(forSourceTime: sourceTime) ?? hoverTime
     }
 
     var body: some View {
@@ -1377,7 +1395,7 @@ private struct StudioTimelineEditor: View {
             // lanes out from it and keep the state copy for the controls.
             let scale = StudioTimelineScale(
                 viewportWidth: max(proxy.size.width, 1),
-                duration: model.duration,
+                duration: displayTimeline.duration,
                 zoom: zoom
             )
 
@@ -1386,22 +1404,39 @@ private struct StudioTimelineEditor: View {
                     .frame(height: StudioTimelineMetrics.playheadLaneHeight)
 
                 StudioTimelineRuler(
-                    duration: model.duration,
+                    duration: displayTimeline.duration,
                     pointsPerSecond: scale.pointsPerSecond,
-                    scrollX: scrollX
+                    scrollX: scrollX,
+                    onHover: { time in
+                        previewTimeline(atDisplayTime: time)
+                    },
+                    onScrub: { time in
+                        model.pause()
+                        model.seek(to: editorTime(forDisplayTime: time))
+                    }
                 )
                 .frame(height: StudioTimelineMetrics.rulerHeight)
 
                 scrollingLanes(scale: scale)
             }
             .overlay {
-                StudioTimelinePlayhead(
-                    time: model.currentTime,
-                    scale: scale,
-                    scrollX: scrollX
-                ) { time in
-                    model.pause()
-                    model.seek(to: time)
+                ZStack {
+                    if let displayHoverTime {
+                        StudioTimelineHoverIndicator(
+                            time: displayHoverTime,
+                            scale: scale,
+                            scrollX: scrollX
+                        )
+                    }
+
+                    StudioTimelinePlayhead(
+                        time: displayPlayheadTime,
+                        scale: scale,
+                        scrollX: scrollX
+                    ) { time in
+                        model.pause()
+                        model.seek(to: editorTime(forDisplayTime: time))
+                    }
                 }
             }
             .onChange(of: proxy.size.width, initial: true) { _, width in
@@ -1410,8 +1445,8 @@ private struct StudioTimelineEditor: View {
             }
         }
         .frame(height: StudioTimelineMetrics.lanesHeight)
-        .onChange(of: model.duration) { _, _ in clampZoom() }
-        .onChange(of: model.currentTime) { _, time in followPlayhead(to: time) }
+        .onChange(of: displayTimeline.duration) { _, _ in clampZoom() }
+        .onChange(of: model.currentTime) { _, _ in followPlayhead() }
     }
 
     /// The two lanes that carry real edit targets live in a horizontal scroll
@@ -1478,13 +1513,20 @@ private struct StudioTimelineEditor: View {
                 model.pause()
                 model.seek(to: time)
             },
-            onHover: { time in
-                model.timelineHoverTime = time
-                model.hoverPreviewTime = time
-            },
+            onHover: { previewTimeline(atEditorTime: $0) },
             onSplit: { model.splitClip(at: $0) },
             onDelete: { deleteSelection() },
             onTrim: { model.trimClip($0) },
+            onTrimPreview: { sourceTime in
+                if let sourceTime {
+                    model.previewTrim(atSourceTime: sourceTime)
+                } else {
+                    model.endTrimPreview()
+                }
+            },
+            onDisplayTimelineChange: { timeline in
+                trimDisplayTimeline = timeline
+            },
             onZoom: { factor, anchorTime in
                 applyZoom(factor: factor, anchorTime: anchorTime)
             }
@@ -1529,10 +1571,10 @@ private struct StudioTimelineEditor: View {
         }
     }
 
-    private func followPlayhead(to time: TimeInterval) {
+    private func followPlayhead() {
         let current = scale
         guard current.isScrollable else { return }
-        let x = current.x(for: time)
+        let x = current.x(for: displayPlayheadTime)
         guard x < scrollX + Self.followMargin
             || x > scrollX + viewportWidth - Self.followMargin else { return }
         // While playing, land the playhead a third in so there is room to
@@ -1550,11 +1592,27 @@ private struct StudioTimelineEditor: View {
     /// Zoom buttons keep the playhead pinned when it is on screen, so the
     /// scale grows around the edit point rather than the viewport middle.
     private var buttonZoomAnchor: TimeInterval {
-        let x = scale.x(for: model.currentTime)
+        let x = scale.x(for: displayPlayheadTime)
         if x >= scrollX, x <= scrollX + viewportWidth {
-            return model.currentTime
+            return displayPlayheadTime
         }
         return scale.time(forX: scrollX + viewportWidth / 2)
+    }
+
+    private func editorTime(forDisplayTime time: TimeInterval) -> TimeInterval {
+        guard let trimDisplayTimeline else { return time }
+        let sourceTime = trimDisplayTimeline.sourceTime(at: time)
+        return model.clipTimeline.editorTime(forSourceTime: sourceTime)
+            ?? min(max(time, 0), model.duration)
+    }
+
+    private func previewTimeline(atDisplayTime time: TimeInterval?) {
+        previewTimeline(atEditorTime: time.map(editorTime(forDisplayTime:)))
+    }
+
+    private func previewTimeline(atEditorTime time: TimeInterval?) {
+        model.timelineHoverTime = time
+        model.hoverPreviewTime = time
     }
 
     private var zoomControls: some View {
@@ -1637,6 +1695,7 @@ private struct StudioTimelineEditor: View {
                         model.pause()
                         model.seek(to: 0)
                     }
+                    .keyboardShortcut("0", modifiers: [])
 
                     Button {
                         model.togglePlayback()
@@ -1786,6 +1845,36 @@ private struct StudioTimelineScale: Equatable {
     }
 }
 
+/// Lightweight preview marker. It shares the playhead's full-height alignment
+/// but stays dashed and thinner so hover never looks like a committed seek.
+private struct StudioTimelineHoverIndicator: View {
+    let time: TimeInterval
+    let scale: StudioTimelineScale
+    let scrollX: CGFloat
+
+    var body: some View {
+        Canvas { context, size in
+            let x = scale.x(for: time) - scrollX
+            guard x >= -1, x <= size.width + 1 else { return }
+
+            var path = Path()
+            path.move(to: CGPoint(x: x, y: StudioTimelineMetrics.playheadLaneHeight - 2))
+            path.addLine(to: CGPoint(x: x, y: size.height))
+            context.stroke(
+                path,
+                with: .color(.accentColor.opacity(0.88)),
+                style: StrokeStyle(
+                    lineWidth: 0.8,
+                    lineCap: .round,
+                    dash: [2, 3]
+                )
+            )
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
 /// Full-height playhead with a grabbable crown pin in the lane above the
 /// ruler. The crown is the only hit target - everywhere else the overlay
 /// passes clicks through to the tracks underneath.
@@ -1893,6 +1982,8 @@ private struct StudioTimelineRuler: View {
     let duration: Double
     let pointsPerSecond: CGFloat
     let scrollX: CGFloat
+    let onHover: (TimeInterval?) -> Void
+    let onScrub: (TimeInterval) -> Void
 
     var body: some View {
         Canvas { context, size in
@@ -1981,6 +2072,28 @@ private struct StudioTimelineRuler: View {
                 drawLabel(endpointLabel, at: endpointX, trailing: true)
             }
         }
+        .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                onHover(time(atViewportX: location.x))
+            case .ended:
+                onHover(nil)
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let time = time(atViewportX: value.location.x)
+                    onHover(time)
+                    onScrub(time)
+                }
+        )
+    }
+
+    private func time(atViewportX x: CGFloat) -> TimeInterval {
+        guard pointsPerSecond > 0 else { return 0 }
+        return min(max(Double((x + scrollX) / pointsPerSecond), 0), duration)
     }
 
     /// Smallest "nice" interval whose labels stay comfortably apart at the
