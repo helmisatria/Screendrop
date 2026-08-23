@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 extension View {
@@ -28,51 +29,83 @@ extension View {
     }
 
     @ViewBuilder
-    func compatibleDragSessionUpdated(
+    func compatibleDraggable<Preview: View>(
+        _ url: URL,
         onBegan: @escaping () -> Void,
-        onEnded: @escaping () -> Void
+        onEnded: @escaping () -> Void,
+        @ViewBuilder preview: @escaping () -> Preview
     ) -> some View {
         if #available(macOS 26.0, *) {
-            onDragSessionUpdated { session in
-                switch session.phase {
-                case .active:
-                    onBegan()
-                case .ended:
-                    onEnded()
-                default:
-                    break
+            draggable(url, preview: preview)
+                .onDragSessionUpdated { session in
+                    switch session.phase {
+                    case .active:
+                        onBegan()
+                    case .ended:
+                        onEnded()
+                    default:
+                        break
+                    }
                 }
-            }
         } else {
             modifier(
-                LegacyDragSessionModifier(
+                LegacyFileDragModifier(
+                    url: url,
                     onBegan: onBegan,
-                    onEnded: onEnded
+                    onEnded: onEnded,
+                    preview: preview
                 )
             )
         }
     }
 }
 
-private struct LegacyDragSessionModifier: ViewModifier {
+private struct LegacyFileDragModifier<Preview: View>: ViewModifier {
+    let url: URL
     let onBegan: () -> Void
     let onEnded: () -> Void
+    let preview: () -> Preview
 
     @State private var isDragging = false
+    @State private var completionTask: Task<Void, Never>?
 
     func body(content: Content) -> some View {
-        content.simultaneousGesture(
-            DragGesture(minimumDistance: 1)
-                .onChanged { _ in
-                    guard !isDragging else { return }
-                    isDragging = true
-                    onBegan()
-                }
-                .onEnded { _ in
-                    guard isDragging else { return }
-                    isDragging = false
-                    onEnded()
-                }
-        )
+        content
+            .onDrag {
+                beginDrag()
+                return NSItemProvider(object: url as NSURL)
+            } preview: {
+                preview()
+            }
+            .onDisappear {
+                completionTask?.cancel()
+                completionTask = nil
+                isDragging = false
+            }
+    }
+
+    private func beginDrag() {
+        guard !isDragging else { return }
+
+        isDragging = true
+        onBegan()
+
+        completionTask?.cancel()
+        completionTask = Task { @MainActor in
+            while NSEvent.pressedMouseButtons & 1 != 0 {
+                try? await Task.sleep(for: .milliseconds(16))
+                guard !Task.isCancelled else { return }
+            }
+
+            finishDrag()
+        }
+    }
+
+    private func finishDrag() {
+        guard isDragging else { return }
+
+        completionTask = nil
+        isDragging = false
+        onEnded()
     }
 }

@@ -98,13 +98,16 @@ struct PreviewCardView: View {
                     }
                 }
             }
-            .draggable(item.url) {
+            .compatibleDraggable(
+                item.url,
+                onBegan: onDragBegan,
+                onEnded: onDragEnded
+            ) {
                 Image(nsImage: item.previewImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .clipShape(.rect(cornerRadius: cornerRadius))
             }
-            .compatibleDragSessionUpdated(onBegan: onDragBegan, onEnded: onDragEnded)
             .onHover { status in
                 withAnimation(previewStackAnimation) {
                     isHovered = status
