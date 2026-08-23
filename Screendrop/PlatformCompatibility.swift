@@ -44,7 +44,35 @@ extension View {
                 }
             }
         } else {
-            self
+            modifier(
+                LegacyDragSessionModifier(
+                    onBegan: onBegan,
+                    onEnded: onEnded
+                )
+            )
         }
+    }
+}
+
+private struct LegacyDragSessionModifier: ViewModifier {
+    let onBegan: () -> Void
+    let onEnded: () -> Void
+
+    @State private var isDragging = false
+
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { _ in
+                    guard !isDragging else { return }
+                    isDragging = true
+                    onBegan()
+                }
+                .onEnded { _ in
+                    guard isDragging else { return }
+                    isDragging = false
+                    onEnded()
+                }
+        )
     }
 }
