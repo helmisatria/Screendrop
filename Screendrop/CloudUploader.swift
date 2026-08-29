@@ -59,7 +59,8 @@ final class CloudUploader: NSObject {
         title: String? = nil,
         socialEnabled: Bool = true
     ) async throws -> CloudUploadResult {
-        guard isConfigured else {
+        let creds = CloudCredentialStore.shared.snapshot()
+        guard creds.isConfigured else {
             throw CloudUploadError.notConfigured
         }
 
@@ -88,7 +89,6 @@ final class CloudUploader: NSObject {
             }
         }
 
-        let creds = CloudCredentialStore.shared.snapshot()
         let fileName = fileURL.lastPathComponent
         let fileData: Data
         do {
