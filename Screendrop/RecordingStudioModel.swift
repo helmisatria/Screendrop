@@ -72,6 +72,12 @@ final class RecordingStudioModel {
 
     let screenPlayer = AVPlayer()
     let cameraPlayer = AVPlayer()
+    private let trimPreviewPlayer = AVPlayer()
+    private(set) var trimPreviewSourceTime: TimeInterval?
+
+    var previewPlayer: AVPlayer {
+        trimPreviewSourceTime == nil ? screenPlayer : trimPreviewPlayer
+    }
 
     var style = RecordingStudioStyle(background: RecordingStudioDefaults.background) {
         didSet {
@@ -275,6 +281,9 @@ final class RecordingStudioModel {
             loadError = "Could not open the recording: \(error.localizedDescription)"
             return
         }
+        trimPreviewPlayer.replaceCurrentItem(with: AVPlayerItem(asset: asset))
+        trimPreviewPlayer.actionAtItemEnd = .pause
+        trimPreviewPlayer.isMuted = true
 
         if session != nil {
             let pointScale = max(manifest?.pixelScale ?? 1, 1)
@@ -444,6 +453,7 @@ final class RecordingStudioModel {
         }
         endObserver = nil
         screenPlayer.replaceCurrentItem(with: nil)
+        trimPreviewPlayer.replaceCurrentItem(with: nil)
         cameraPlayer.replaceCurrentItem(with: nil)
     }
 
@@ -493,6 +503,41 @@ final class RecordingStudioModel {
         if isPlaying {
             syncCameraPlayback()
         }
+    }
+
+    func previewTrim(atSourceTime sourceTime: TimeInterval) {
+        guard isLoaded, sourceDuration > 0 else { return }
+        pause()
+        if hoverPreviewTime != nil {
+            hoverPreviewTime = nil
+        }
+        let clamped = min(max(sourceTime, 0), sourceDuration)
+        trimPreviewPlayer.seek(
+            to: CMTime(seconds: clamped, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+        trimPreviewSourceTime = clamped
+
+        guard hasCameraVideo else { return }
+        if clamped >= cameraOffset {
+            cameraPlayer.seek(
+                to: CMTime(
+                    seconds: clamped - cameraOffset,
+                    preferredTimescale: 600
+                ),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+        } else {
+            cameraPlayer.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+    }
+
+    func endTrimPreview() {
+        guard trimPreviewSourceTime != nil else { return }
+        trimPreviewSourceTime = nil
+        movePlayers(to: hoverPreviewTime ?? currentTime)
     }
 
     /// Moves both players to a source time without touching `currentTime`,
