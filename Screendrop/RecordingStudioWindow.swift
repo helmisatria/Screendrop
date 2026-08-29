@@ -1331,6 +1331,11 @@ final class StudioPlayerContainerView: NSView {
 // MARK: - Timeline
 
 private struct StudioTimelineEditor: View {
+    private struct TimelinePosition {
+        let editorTime: TimeInterval
+        let displayTime: TimeInterval
+    }
+
     @Bindable var model: RecordingStudioModel
 
     /// Horizontal scale of the lanes, as a multiplier over "the whole
@@ -1341,6 +1346,7 @@ private struct StudioTimelineEditor: View {
     @State private var scrollX: CGFloat = 0
     @State private var scrollPosition = ScrollPosition(edge: .leading)
     @State private var trimDisplayTimeline: RecordingClipTimeline?
+    @State private var rulerHoverDisplayTime: TimeInterval?
 
     /// Step per zoom button press / keyboard shortcut.
     private static let zoomStep: Double = 1.6
@@ -1367,6 +1373,9 @@ private struct StudioTimelineEditor: View {
     }
 
     private var displayHoverTime: TimeInterval? {
+        if let rulerHoverDisplayTime {
+            return rulerHoverDisplayTime
+        }
         guard let hoverTime = model.timelineHoverTime else { return nil }
         guard let trimDisplayTimeline else { return hoverTime }
         let sourceTime = model.clipTimeline.sourceTime(at: hoverTime)
@@ -1600,17 +1609,78 @@ private struct StudioTimelineEditor: View {
     }
 
     private func editorTime(forDisplayTime time: TimeInterval) -> TimeInterval {
-        guard let trimDisplayTimeline else { return time }
-        let sourceTime = trimDisplayTimeline.sourceTime(at: time)
-        return model.clipTimeline.editorTime(forSourceTime: sourceTime)
-            ?? min(max(time, 0), model.duration)
+        timelinePosition(forDisplayTime: time).editorTime
+    }
+
+    private func timelinePosition(
+        forDisplayTime time: TimeInterval
+    ) -> TimelinePosition {
+        guard let trimDisplayTimeline else {
+            return TimelinePosition(editorTime: time, displayTime: time)
+        }
+        let displayTime = min(max(time, 0), trimDisplayTimeline.duration)
+        guard let displayLocation = trimDisplayTimeline.location(at: displayTime) else {
+            return TimelinePosition(editorTime: 0, displayTime: 0)
+        }
+
+        if let exactTime = model.clipTimeline.editorTime(
+            forSourceTime: displayLocation.sourceTime
+        ) {
+            return TimelinePosition(editorTime: exactTime, displayTime: displayTime)
+        }
+
+        // The revealed timeline includes the discarded part of a trimmed
+        // clip. Keep hover and scrub pinned to the nearest kept edge instead
+        // of reinterpreting the revealed timestamp inside the shorter edit.
+        guard let keptClip = model.clipTimeline.segments.first(where: {
+            $0.id == displayLocation.segmentID
+        }), let keptRange = model.clipTimeline.editorRange(for: keptClip.id) else {
+            let firstSourceStart = model.clipTimeline.segments.first?.sourceStart ?? 0
+            if displayLocation.sourceTime <= firstSourceStart {
+                return TimelinePosition(editorTime: 0, displayTime: 0)
+            }
+            return TimelinePosition(
+                editorTime: model.duration,
+                displayTime: trimDisplayTimeline.duration
+            )
+        }
+
+        let isBeforeKeptRange = displayLocation.sourceTime < keptClip.sourceStart
+        if isBeforeKeptRange {
+            let displayBoundary = trimDisplayTimeline.editorTime(
+                forSourceTime: keptClip.sourceStart
+            ) ?? displayTime
+            return TimelinePosition(
+                editorTime: keptRange.lowerBound,
+                displayTime: displayBoundary
+            )
+        }
+
+        let displayBoundary = trimDisplayTimeline.editorTime(
+            forSourceTime: keptClip.sourceEnd
+        ) ?? displayTime
+        return TimelinePosition(
+            editorTime: keptRange.upperBound,
+            displayTime: displayBoundary
+        )
     }
 
     private func previewTimeline(atDisplayTime time: TimeInterval?) {
-        previewTimeline(atEditorTime: time.map(editorTime(forDisplayTime:)))
+        guard let time else {
+            rulerHoverDisplayTime = nil
+            model.timelineHoverTime = nil
+            model.hoverPreviewTime = nil
+            return
+        }
+
+        let position = timelinePosition(forDisplayTime: time)
+        rulerHoverDisplayTime = position.displayTime
+        model.timelineHoverTime = position.editorTime
+        model.hoverPreviewTime = position.editorTime
     }
 
     private func previewTimeline(atEditorTime time: TimeInterval?) {
+        rulerHoverDisplayTime = nil
         model.timelineHoverTime = time
         model.hoverPreviewTime = time
     }
@@ -1656,6 +1726,7 @@ private struct StudioTimelineEditor: View {
                 timelineButton("Split at Playhead", systemImage: "scissors") {
                     model.splitClip(at: model.currentTime)
                 }
+                .keyboardShortcut("t", modifiers: [])
 
                 timelineButton("Delete Selection", systemImage: "trash") {
                     deleteSelection()
