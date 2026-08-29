@@ -2915,19 +2915,23 @@ private struct StudioInspector: View {
     // MARK: Selected clip
 
     private func selectedClipControls(for clip: RecordingClipSegment) -> some View {
-        VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
+        let speedText = InspectorValueFormat
+            .magnification(fractionDigits: 1)
+            .displayString(for: CGFloat(clip.speed))
+
+        return VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
             InspectorSlider(
                 "Speed",
                 value: Binding(
                     get: { CGFloat(clip.speed) },
-                    set: { model.setClipSpeed(Double($0.rounded()), forClipID: clip.id) }
+                    set: { model.setClipSpeed(Double($0), forClipID: clip.id) }
                 ),
                 range: CGFloat(RecordingClipSegment.minimumSpeed)...CGFloat(RecordingClipSegment.maximumSpeed),
-                format: .magnification(fractionDigits: 0)
+                format: .magnification(fractionDigits: 1)
             )
 
             if clip.speed != 1 {
-                Text("Plays this clip \(Int(clip.speed))× faster. Audio speeds up with it.")
+                Text("Plays this clip \(speedText) faster. Audio speeds up with it.")
                     .font(.inspectorLabel)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
