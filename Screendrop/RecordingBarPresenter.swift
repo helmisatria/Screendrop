@@ -41,10 +41,20 @@ final class RecordingBarPresenter {
 
     func togglePicker() {
         if let panel, panel.isVisible, mode == .picker {
-            hide()
+            dismissPicker()
         } else {
             showPicker()
         }
+    }
+
+    func dismissPicker() {
+        guard mode == .picker else { return }
+        hide()
+        CameraRecordingManager.shared.requestPreviewStop()
+    }
+
+    var isPickerVisible: Bool {
+        panel?.isVisible == true && mode == .picker
     }
 
     func showPicker() {
@@ -149,9 +159,7 @@ final class RecordingBarPresenter {
         let cameraID = ScreendropPreferences.recordingCameraDeviceID
         guard !cameraID.isEmpty else { return }
         let displayID = ActiveDisplayResolver.activeDisplayID(preferPointer: false)
-        Task {
-            await CameraRecordingManager.shared.startPreview(deviceID: cameraID, displayID: displayID)
-        }
+        CameraRecordingManager.shared.requestPreviewStart(deviceID: cameraID, displayID: displayID)
     }
 
     private func makePanel() -> NSPanel {
@@ -228,8 +236,7 @@ private final class RecordingBarPanel: NSPanel {
         // Escape backs out of picking a source; it must not abandon a
         // recording that's already running.
         guard RecordingBarPresenter.shared.mode == .picker else { return }
-        RecordingBarPresenter.shared.hide()
-        Task { await CameraRecordingManager.shared.stopPreview() }
+        RecordingBarPresenter.shared.dismissPicker()
     }
 }
 

@@ -17,6 +17,30 @@ struct InspectorValueFormat {
     let step: CGFloat
     let acceptedSuffixes: [String]
     let usesDotDecimalSeparator: Bool
+    private let displayTransform: (CGFloat) -> CGFloat
+    private let modelTransform: (CGFloat) -> CGFloat
+
+    init(
+        multiplier: CGFloat,
+        fractionDigits: Int,
+        suffix: String,
+        showsPositiveSign: Bool,
+        step: CGFloat,
+        acceptedSuffixes: [String],
+        usesDotDecimalSeparator: Bool,
+        displayTransform: @escaping (CGFloat) -> CGFloat = { $0 },
+        modelTransform: @escaping (CGFloat) -> CGFloat = { $0 }
+    ) {
+        self.multiplier = multiplier
+        self.fractionDigits = fractionDigits
+        self.suffix = suffix
+        self.showsPositiveSign = showsPositiveSign
+        self.step = step
+        self.acceptedSuffixes = acceptedSuffixes
+        self.usesDotDecimalSeparator = usesDotDecimalSeparator
+        self.displayTransform = displayTransform
+        self.modelTransform = modelTransform
+    }
 
     static let integer = InspectorValueFormat(
         multiplier: 1,
@@ -77,6 +101,39 @@ struct InspectorValueFormat {
         )
     }
 
+    static func decibels(fractionDigits: Int = 1) -> InspectorValueFormat {
+        InspectorValueFormat(
+            multiplier: 1,
+            fractionDigits: fractionDigits,
+            suffix: " dB",
+            showsPositiveSign: true,
+            step: step(forFractionDigits: fractionDigits),
+            acceptedSuffixes: ["decibels", "decibel", "db"],
+            usesDotDecimalSeparator: true
+        )
+    }
+
+    /// Keeps the slider logarithmic in dB while showing the linear volume
+    /// percentage people expect. 100% is the source recording's level.
+    static func audioVolumePercent(fractionDigits: Int = 0) -> InspectorValueFormat {
+        InspectorValueFormat(
+            multiplier: 100,
+            fractionDigits: fractionDigits,
+            suffix: "%",
+            showsPositiveSign: false,
+            step: 1,
+            acceptedSuffixes: ["%"],
+            usesDotDecimalSeparator: false,
+            displayTransform: { gainDB in
+                CGFloat(pow(10, Double(gainDB) / 20))
+            },
+            modelTransform: { multiplier in
+                guard multiplier > 0 else { return -120 }
+                return CGFloat(20 * log10(Double(multiplier)))
+            }
+        )
+    }
+
     static func magnification(fractionDigits: Int) -> InspectorValueFormat {
         InspectorValueFormat(
             multiplier: 1,
@@ -90,14 +147,14 @@ struct InspectorValueFormat {
     }
 
     func displayString(for value: CGFloat) -> String {
-        let scaledValue = value * multiplier
+        let scaledValue = displayTransform(value) * multiplier
         let number = formattedNumber(scaledValue)
         let sign = showsPositiveSign && roundedForDisplay(scaledValue) > 0 ? "+" : ""
         return sign + number + suffix
     }
 
     func editingString(for value: CGFloat) -> String {
-        formattedNumber(value * multiplier)
+        formattedNumber(displayTransform(value) * multiplier)
     }
 
     func parse(_ text: String) -> CGFloat? {
@@ -126,7 +183,7 @@ struct InspectorValueFormat {
             return nil
         }
 
-        return CGFloat(parsed) / multiplier
+        return modelTransform(CGFloat(parsed) / multiplier)
     }
 
     private func formattedNumber(_ value: CGFloat) -> String {

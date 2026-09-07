@@ -124,6 +124,28 @@ enum RecordingSessionRenderer {
             aspect != .original && aspectMode == .fit && canvasSize.height > 0
                 ? canvasSize.width / canvasSize.height
                 : nil
+        let audioDescriptors = (try? await RecordingAudioWaveformAnalyzer.descriptors(
+            url: session.screenURL,
+            manifest: manifest
+        )) ?? []
+        let audioKinds = audioDescriptors.sorted { $0.sourceIndex < $1.sourceIndex }.map(\.kind)
+        let storedAudioEdits = Dictionary(
+            uniqueKeysWithValues: (document?.audioTrackEdits ?? []).map { ($0.kind, $0) }
+        )
+        let audioTrackEdits = audioKinds.map { kind in
+            (storedAudioEdits[kind]
+                ?? RecordingAudioTrackEdit.followingVideo(kind: kind, timeline: clipTimeline))
+                .normalized(sourceDuration: duration, timelineDuration: clipTimeline.duration)
+        }
+        let recordedAudioGains = audioKinds.map { kind in
+            switch kind {
+            case .system: document?.systemAudioGainDB ?? 0
+            case .microphone: document?.microphoneAudioGainDB ?? 0
+            }
+        }
+        let replacementURL = document?.replacementAudioFileName.map {
+            session.directoryURL.appendingPathComponent($0)
+        }
 
         let configuration = RecordingStudioExporter.Configuration(
             screenURL: session.screenURL,
@@ -151,6 +173,10 @@ enum RecordingSessionRenderer {
                 ?? CGRect(x: 0, y: 0, width: 1, height: 1),
             clipTimeline: clipTimeline,
             exportSettings: document?.exportSettings ?? VideoCompressionSettings(),
+            audioReplacementURL: replacementURL,
+            recordedAudioGainsDB: recordedAudioGains,
+            audioTrackEdits: audioTrackEdits,
+            audioTrackKinds: audioKinds,
             reframe: reframe,
             fitContentAspect: fitContentAspect
         )

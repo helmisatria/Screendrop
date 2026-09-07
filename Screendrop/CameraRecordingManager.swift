@@ -65,6 +65,10 @@ final class CameraRecordingManager {
     /// opposed to just warming the sensor for the floating preview.
     private(set) var isWriting = false
     private var activeDeviceID: String?
+    private var previewRequestGeneration = 0
+    private var isStartingPreview = false
+    private var previewStopGeneration = 0
+    private var previewStopTask: Task<Void, Never>?
 
     private init() {}
 
@@ -75,43 +79,141 @@ final class CameraRecordingManager {
     /// visible fade-in macOS shows whenever a capture session starts cold -
     /// finishes before "Start Recording", instead of showing up live and at
     /// the start of the recorded footage.
+    func requestPreviewStart(deviceID: String, displayID: CGDirectDisplayID?) {
+        let requestGeneration = beginPreviewRequest()
+        Task {
+            _ = await startPreview(
+                deviceID: deviceID,
+                displayID: displayID,
+                requestGeneration: requestGeneration
+            )
+        }
+    }
+
     @discardableResult
     func startPreview(deviceID: String, displayID: CGDirectDisplayID?) async -> Bool {
+        let requestGeneration = beginPreviewRequest()
+        return await startPreview(
+            deviceID: deviceID,
+            displayID: displayID,
+            requestGeneration: requestGeneration
+        )
+    }
+
+    private func startPreview(
+        deviceID: String,
+        displayID: CGDirectDisplayID?,
+        requestGeneration: Int
+    ) async -> Bool {
         guard !isWriting else { return true }
+        guard requestGeneration == previewRequestGeneration else { return false }
+        await waitForPendingPreviewStop()
+        guard requestGeneration == previewRequestGeneration else { return false }
+
+        // A second request must wait for the first session attempt to be
+        // torn down before configuring AVCaptureSession again.
+        if isStartingPreview {
+            await stopCurrentPreviewSession()
+            guard requestGeneration == previewRequestGeneration else { return false }
+        }
         if isRunning {
             if activeDeviceID == deviceID {
                 showPreview(displayID: displayID)
                 return true
             }
-            await stopPreview()
+            await stopCurrentPreviewSession()
+            guard requestGeneration == previewRequestGeneration else { return false }
         }
         guard let device = RecordingDeviceCatalog.camera(withID: deviceID) else { return false }
 
+        isStartingPreview = true
+
         let authorized = await AVCaptureDevice.requestAccess(for: .video)
-        guard authorized else { return false }
+        guard requestGeneration == previewRequestGeneration else { return false }
+        guard authorized else {
+            isStartingPreview = false
+            return false
+        }
 
         do {
             try await engine.startSession(device: device)
         } catch {
+            guard requestGeneration == previewRequestGeneration else { return false }
+            isStartingPreview = false
             print("Camera preview failed to start: \(error)")
             return false
         }
 
+        // The picker may have closed while AVCaptureSession was starting.
+        // Its stop request is already queued behind that startup work, so a
+        // stale completion must never revive the preview window or state.
+        guard requestGeneration == previewRequestGeneration else { return false }
+        isStartingPreview = false
         isRunning = true
         activeDeviceID = deviceID
         showPreview(displayID: displayID)
         return true
     }
 
+    private func beginPreviewRequest() -> Int {
+        previewRequestGeneration &+= 1
+        return previewRequestGeneration
+    }
+
+    /// Invalidates startup synchronously, then tears down the session in the
+    /// background. This is the dismissal path: the late result of an in-flight
+    /// camera start can no longer make the preview reappear.
+    func requestPreviewStop() {
+        guard prepareToStopPreview() else { return }
+        schedulePreviewStop()
+    }
+
     /// Tears down a warm preview that never turned into a recording - the
     /// camera was toggled off, or the pre-record picker was dismissed
     /// without starting. No-op while an actual recording is using the camera.
     func stopPreview() async {
-        guard isRunning, !isWriting else { return }
+        guard prepareToStopPreview() else { return }
+        schedulePreviewStop()
+        await waitForPendingPreviewStop()
+    }
+
+    private func prepareToStopPreview() -> Bool {
+        guard !isWriting else { return false }
+        previewRequestGeneration &+= 1
+        isStartingPreview = false
         isRunning = false
         activeDeviceID = nil
         hidePreview()
-        await engine.stopSessionOnly()
+        return true
+    }
+
+    private func stopCurrentPreviewSession() async {
+        isStartingPreview = false
+        isRunning = false
+        activeDeviceID = nil
+        hidePreview()
+        schedulePreviewStop()
+        await waitForPendingPreviewStop()
+    }
+
+    private func schedulePreviewStop() {
+        previewStopGeneration &+= 1
+        let previousStop = previewStopTask
+        previewStopTask = Task {
+            if let previousStop {
+                await previousStop.value
+            }
+            await engine.stopSessionOnly()
+        }
+    }
+
+    private func waitForPendingPreviewStop() async {
+        while let previewStopTask {
+            let stopGeneration = previewStopGeneration
+            await previewStopTask.value
+            guard stopGeneration == previewStopGeneration else { continue }
+            self.previewStopTask = nil
+        }
     }
 
     /// Starts writing camera frames to `outputURL`. Reuses an already-warm
