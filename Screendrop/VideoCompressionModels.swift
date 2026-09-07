@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum VideoCompressionQuality: String, CaseIterable, Identifiable, Codable, Sendable {
+nonisolated enum VideoCompressionQuality: String, CaseIterable, Identifiable, Codable, Sendable {
     case high = "High"
     case medium = "Medium"
     case low = "Low"
@@ -35,7 +35,7 @@ enum VideoCompressionQuality: String, CaseIterable, Identifiable, Codable, Senda
     }
 }
 
-enum VideoCompressionSpeed: String, CaseIterable, Identifiable, Codable, Sendable {
+nonisolated enum VideoCompressionSpeed: String, CaseIterable, Identifiable, Codable, Sendable {
     case ultrafast = "Ultrafast"
     case fast = "Fast"
     case medium = "Medium"
@@ -48,7 +48,7 @@ enum VideoCompressionSpeed: String, CaseIterable, Identifiable, Codable, Sendabl
     }
 }
 
-enum VideoCompressionCodec: String, CaseIterable, Identifiable, Codable, Sendable {
+nonisolated enum VideoCompressionCodec: String, CaseIterable, Identifiable, Codable, Sendable {
     case h264 = "H.264"
     case hevc = "HEVC"
 
@@ -64,7 +64,7 @@ enum VideoCompressionCodec: String, CaseIterable, Identifiable, Codable, Sendabl
     }
 }
 
-enum VideoCompressionResolution: String, CaseIterable, Identifiable, Codable, Sendable {
+nonisolated enum VideoCompressionResolution: String, CaseIterable, Identifiable, Codable, Sendable {
     case original = "Original"
     case p1080 = "1080p"
     case p720 = "720p"
@@ -88,7 +88,7 @@ enum VideoCompressionResolution: String, CaseIterable, Identifiable, Codable, Se
 
 /// Delivery container for exported recordings. The encoded video and audio
 /// are identical either way - only the wrapper differs.
-enum VideoExportContainer: String, CaseIterable, Identifiable, Codable, Sendable {
+nonisolated enum VideoExportContainer: String, CaseIterable, Identifiable, Codable, Sendable {
     /// What capture already writes, so a plain recording exports as a
     /// copy-on-write clone with no rewrite at all.
     case mov = "MOV"
@@ -110,7 +110,7 @@ enum VideoExportContainer: String, CaseIterable, Identifiable, Codable, Sendable
     }
 }
 
-struct VideoCompressionSettings: Codable, Equatable, Sendable {
+nonisolated struct VideoCompressionSettings: Codable, Equatable, Sendable {
     var quality: VideoCompressionQuality = .medium
     var speed: VideoCompressionSpeed = .fast
     var codec: VideoCompressionCodec = .h264
@@ -125,7 +125,7 @@ struct VideoCompressionSettings: Codable, Equatable, Sendable {
     var effectiveContainer: VideoExportContainer { container ?? .default }
 }
 
-struct VideoCompressionResult: Sendable {
+nonisolated struct VideoCompressionResult: Sendable {
     let outputURL: URL
     let inputSize: Int64
     let outputSize: Int64

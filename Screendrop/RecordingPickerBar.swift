@@ -95,8 +95,8 @@ struct RecordingPickerControls: View {
                 id: .teleprompter,
                 title: teleprompterEnabled ? "Teleprompter on" : "Teleprompter off",
                 isOn: teleprompterEnabled,
-                onIcon: "text.pad.header",
-                offIcon: "text.pad.header",
+                onIcon: "text.page",
+                offIcon: "text.page",
                 accessibility: teleprompterEnabled
                     ? "Teleprompter on - click to edit the script"
                     : "Teleprompter off - click to write a script"

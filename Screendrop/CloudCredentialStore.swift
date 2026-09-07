@@ -36,15 +36,23 @@ final class CloudCredentialStore {
 
     // MARK: - Backing storage (observed)
 
-    private(set) var _uploadToken: String = ""
+    private var cachedUploadToken: String?
     private(set) var _workerURL: String = ""
 
     // MARK: - Public computed setters
 
     var uploadToken: String {
-        get { _uploadToken }
+        get {
+            if let cachedUploadToken {
+                return cachedUploadToken
+            }
+
+            let storedToken = Self.getKeychainItem(key: Keys.uploadToken) ?? ""
+            cachedUploadToken = storedToken
+            return storedToken
+        }
         set {
-            _uploadToken = newValue
+            cachedUploadToken = newValue
             Self.setKeychainItem(key: Keys.uploadToken, value: newValue)
         }
     }
@@ -60,21 +68,20 @@ final class CloudCredentialStore {
     // MARK: - Convenience
 
     var isConfigured: Bool {
-        !_workerURL.isEmpty && !_uploadToken.isEmpty
+        !_workerURL.isEmpty && Self.hasKeychainItem(key: Keys.uploadToken)
     }
 
     /// Create an immutable snapshot for passing across actor boundaries.
     func snapshot() -> CloudCredentials {
         CloudCredentials(
             workerURL: _workerURL,
-            uploadToken: _uploadToken
+            uploadToken: uploadToken
         )
     }
 
     // MARK: - Init
 
     private init() {
-        _uploadToken = Self.getKeychainItem(key: Keys.uploadToken) ?? ""
         _workerURL = defaults.string(forKey: Keys.workerURL) ?? ""
 
         // Migrate from old UserDefaults-based cloud token if present
@@ -85,7 +92,9 @@ final class CloudCredentialStore {
 
     private func migrateFromLegacyDefaults() {
         let oldTokenKey = "cloudUploadToken"
-        if let oldToken = defaults.string(forKey: oldTokenKey), !oldToken.isEmpty, _uploadToken.isEmpty {
+        if let oldToken = defaults.string(forKey: oldTokenKey),
+           !oldToken.isEmpty,
+           !Self.hasKeychainItem(key: Keys.uploadToken) {
             uploadToken = oldToken
             defaults.removeObject(forKey: oldTokenKey)
         }
@@ -115,8 +124,6 @@ final class CloudCredentialStore {
     // MARK: - Keychain
 
     private static func setKeychainItem(key: String, value: String) {
-        let data = Data(value.utf8)
-
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
@@ -124,10 +131,24 @@ final class CloudCredentialStore {
         ]
 
         SecItemDelete(query as CFDictionary)
+        guard !value.isEmpty else { return }
 
         var newQuery = query
-        newQuery[kSecValueData as String] = data
+        newQuery[kSecValueData as String] = Data(value.utf8)
         SecItemAdd(newQuery as CFDictionary, nil)
+    }
+
+    /// Checks whether the token exists without requesting its protected value.
+    private static func hasKeychainItem(key: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecAttrService as String: keychainService,
+            kSecReturnPersistentRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     private static func getKeychainItem(key: String) -> String? {

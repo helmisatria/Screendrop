@@ -98,21 +98,15 @@ struct PreviewCardView: View {
                     }
                 }
             }
-            .draggable(item.url) {
+            .compatibleDraggable(
+                item.url,
+                onBegan: onDragBegan,
+                onEnded: onDragEnded
+            ) {
                 Image(nsImage: item.previewImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .clipShape(.rect(cornerRadius: cornerRadius))
-            }
-            .onDragSessionUpdated { session in
-                switch session.phase {
-                case .active:
-                    onDragBegan()
-                case .ended:
-                    onDragEnded()
-                default:
-                    break
-                }
             }
             .onHover { status in
                 withAnimation(previewStackAnimation) {

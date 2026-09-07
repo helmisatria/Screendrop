@@ -58,14 +58,14 @@ enum VideoPreviewImageLoader {
 }
 
 extension VideoExportContainer {
-    var contentType: UTType {
+    nonisolated var contentType: UTType {
         switch self {
         case .mov: .quickTimeMovie
         case .mp4: .mpeg4Movie
         }
     }
 
-    var fileType: AVFileType {
+    nonisolated var fileType: AVFileType {
         switch self {
         case .mov: .mov
         case .mp4: .mp4
@@ -75,7 +75,7 @@ extension VideoExportContainer {
     /// Faststart is an MP4/streaming convention. Asking for it costs the
     /// writer an extra reorganisation pass, so it is not requested for
     /// containers that gain nothing from it.
-    var supportsFastStart: Bool { self == .mp4 }
+    nonisolated var supportsFastStart: Bool { self == .mp4 }
 }
 
 enum VideoFileActions {

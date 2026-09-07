@@ -23,6 +23,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
     let onSplit: (TimeInterval) -> Void
     let onDelete: () -> Void
     let onTrim: (RecordingClipSegment) -> Void
+    let onTrimPreview: (TimeInterval?) -> Void
+    let onDisplayTimelineChange: (RecordingClipTimeline?) -> Void
     /// Pinch or ⌘-scroll over the lane: `(factor, anchor editor time)`. The
     /// anchor is the time under the pointer, which the caller keeps pinned to
     /// its current screen position while the scale changes.
@@ -38,6 +40,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onSplit: onSplit,
             onDelete: onDelete,
             onTrim: onTrim,
+            onTrimPreview: onTrimPreview,
+            onDisplayTimelineChange: onDisplayTimelineChange,
             onZoom: onZoom
         )
     }
@@ -56,6 +60,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onSplit: onSplit,
             onDelete: onDelete,
             onTrim: onTrim,
+            onTrimPreview: onTrimPreview,
+            onDisplayTimelineChange: onDisplayTimelineChange,
             onZoom: onZoom
         )
         nsView.update(
@@ -77,6 +83,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
         private var onSplit: (TimeInterval) -> Void
         private var onDelete: () -> Void
         private var onTrim: (RecordingClipSegment) -> Void
+        private var onTrimPreview: (TimeInterval?) -> Void
+        private var onDisplayTimelineChange: (RecordingClipTimeline?) -> Void
         private var onZoom: (Double, TimeInterval) -> Void
 
         init(
@@ -88,6 +96,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onSplit: @escaping (TimeInterval) -> Void,
             onDelete: @escaping () -> Void,
             onTrim: @escaping (RecordingClipSegment) -> Void,
+            onTrimPreview: @escaping (TimeInterval?) -> Void,
+            onDisplayTimelineChange: @escaping (RecordingClipTimeline?) -> Void,
             onZoom: @escaping (Double, TimeInterval) -> Void
         ) {
             _selectedClipID = selectedClipID
@@ -98,6 +108,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             self.onSplit = onSplit
             self.onDelete = onDelete
             self.onTrim = onTrim
+            self.onTrimPreview = onTrimPreview
+            self.onDisplayTimelineChange = onDisplayTimelineChange
             self.onZoom = onZoom
         }
 
@@ -108,6 +120,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onSplit: @escaping (TimeInterval) -> Void,
             onDelete: @escaping () -> Void,
             onTrim: @escaping (RecordingClipSegment) -> Void,
+            onTrimPreview: @escaping (TimeInterval?) -> Void,
+            onDisplayTimelineChange: @escaping (RecordingClipTimeline?) -> Void,
             onZoom: @escaping (Double, TimeInterval) -> Void
         ) {
             self.onSelect = onSelect
@@ -116,6 +130,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             self.onSplit = onSplit
             self.onDelete = onDelete
             self.onTrim = onTrim
+            self.onTrimPreview = onTrimPreview
+            self.onDisplayTimelineChange = onDisplayTimelineChange
             self.onZoom = onZoom
         }
 
@@ -140,6 +156,14 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             view.trimDidCommit = { [weak self] clip in
                 self?.onTrim(clip)
             }
+            view.trimPreviewSourceTimeDidChange = { [weak self] time in
+                self?.onTrimPreview(time)
+            }
+            view.displayTimelineDidChange = { [weak self] timeline in
+                Task { @MainActor [weak self] in
+                    self?.onDisplayTimelineChange(timeline)
+                }
+            }
             view.zoomRequested = { [weak self] factor, anchorTime in
                 self?.onZoom(factor, anchorTime)
             }
@@ -154,6 +178,8 @@ final class RecordingClipTimelineControl: NSView {
     var splitRequested: ((TimeInterval) -> Void)?
     var deleteRequested: (() -> Void)?
     var trimDidCommit: ((RecordingClipSegment) -> Void)?
+    var trimPreviewSourceTimeDidChange: ((TimeInterval?) -> Void)?
+    var displayTimelineDidChange: ((RecordingClipTimeline?) -> Void)?
     var zoomRequested: ((Double, TimeInterval) -> Void)?
 
     private enum Edge: Equatable {
@@ -164,6 +190,26 @@ final class RecordingClipTimelineControl: NSView {
     private enum DragTarget {
         case scrub
         case trim(clipID: UUID, edge: Edge)
+    }
+
+    private struct TrimReveal {
+        let clipID: UUID
+        let displayTimeline: RecordingClipTimeline
+        let availableClip: RecordingClipSegment
+    }
+
+    private struct EdgeHit {
+        let clipID: UUID
+        let edge: Edge
+        let distance: CGFloat
+    }
+
+    private struct TrimPreviewGeometry {
+        let clipID: UUID
+        let originalRect: CGRect
+        let keptRect: CGRect
+        let editorStart: TimeInterval
+        let editorEnd: TimeInterval
     }
 
     private enum Metrics {
@@ -191,11 +237,13 @@ final class RecordingClipTimelineControl: NSView {
     private var trackingArea: NSTrackingArea?
     private var hoverTime: TimeInterval?
     private var hoveredClipID: UUID?
-    private var hoveredEdge: (clipID: UUID, edge: Edge)?
+    private var hoveredEdge: EdgeHit?
     private var dragTarget: DragTarget?
     private var dragStartPoint: CGPoint?
     private var dragStartTimeline: RecordingClipTimeline?
     private var dragStartClip: RecordingClipSegment?
+    private var trimReveal: TrimReveal?
+    private var publishedDisplayTimeline: RecordingClipTimeline?
     private var contextTime: TimeInterval?
     private var contextClipID: UUID?
     private var lastHoverCallbackTimestamp: TimeInterval = 0
@@ -216,6 +264,8 @@ final class RecordingClipTimelineControl: NSView {
     ) {
         if dragTarget == nil {
             self.timeline = timeline
+            validateTrimReveal(for: timeline, selectedClipID: selectedClipID)
+            publishDisplayTimelineIfNeeded()
         }
         self.sourceDuration = sourceDuration
         if self.thumbnails !== thumbnails {
@@ -229,6 +279,23 @@ final class RecordingClipTimelineControl: NSView {
         self.selectedClipID = selectedClipID
         self.playheadTime = min(max(playheadTime, 0), max(timeline.duration, 0))
         needsDisplay = true
+    }
+
+    private func validateTrimReveal(
+        for timeline: RecordingClipTimeline,
+        selectedClipID: UUID?
+    ) {
+        guard let reveal = trimReveal else { return }
+        guard selectedClipID == reveal.clipID,
+              timeline.segments.map(\.id) == reveal.displayTimeline.segments.map(\.id),
+              let clip = timeline.segments.first(where: { $0.id == reveal.clipID }),
+              clip.speed == reveal.availableClip.speed,
+              clip.sourceStart >= reveal.availableClip.sourceStart,
+              clip.sourceEnd <= reveal.availableClip.sourceEnd else {
+            trimReveal = nil
+            publishDisplayTimelineIfNeeded()
+            return
+        }
     }
 
     override func updateTrackingAreas() {
@@ -259,8 +326,8 @@ final class RecordingClipTimelineControl: NSView {
         drawTrack()
         drawSelectionChrome()
         drawClips(in: dirtyRect)
+        drawTrimOverlay()
         drawSelectionGrooves()
-        drawHoverSkimmer()
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -291,11 +358,19 @@ final class RecordingClipTimelineControl: NSView {
         let point = convert(event.locationInWindow, from: nil)
         guard timelineRect.contains(point) else { return }
         let time = editorTime(forX: point.x)
-        guard let location = timeline.location(at: time) else { return }
         let edgeHit = edgeHit(at: point)
-        let targetClipID = edgeHit?.clipID ?? location.segmentID
+        let targetClipID: UUID
+        if let edgeHit {
+            targetClipID = edgeHit.clipID
+        } else if let location = timeline.location(at: time) {
+            targetClipID = location.segmentID
+        } else {
+            return
+        }
 
         if selectedClipID != targetClipID {
+            trimReveal = nil
+            publishDisplayTimelineIfNeeded()
             selectedClipID = targetClipID
             selectionDidChange?(targetClipID)
         }
@@ -304,6 +379,13 @@ final class RecordingClipTimelineControl: NSView {
         dragStartTimeline = timeline
         if let hit = edgeHit,
            let clip = timeline.segments.first(where: { $0.id == hit.clipID }) {
+            if trimReveal?.clipID != hit.clipID {
+                trimReveal = TrimReveal(
+                    clipID: hit.clipID,
+                    displayTimeline: timeline,
+                    availableClip: clip
+                )
+            }
             dragTarget = .trim(clipID: hit.clipID, edge: hit.edge)
             dragStartClip = clip
         } else {
@@ -330,6 +412,7 @@ final class RecordingClipTimelineControl: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        let wasTrimming = dragStartClip != nil
         if case .trim(let clipID, _) = dragTarget,
            let original = dragStartClip,
            let replacement = timeline.segments.first(where: { $0.id == clipID }),
@@ -341,6 +424,9 @@ final class RecordingClipTimelineControl: NSView {
         dragStartPoint = nil
         dragStartTimeline = nil
         dragStartClip = nil
+        if wasTrimming {
+            trimPreviewSourceTimeDidChange?(nil)
+        }
         updateHover(with: event, forceCallback: true)
         needsDisplay = true
     }
@@ -366,7 +452,7 @@ final class RecordingClipTimelineControl: NSView {
     }
 
     private func anchorTime(for event: NSEvent) -> TimeInterval {
-        editorTime(forX: convert(event.locationInWindow, from: nil).x)
+        displayEditorTime(forX: convert(event.locationInWindow, from: nil).x)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -475,13 +561,21 @@ final class RecordingClipTimelineControl: NSView {
             return
         }
 
-        // The drag distance is measured against the timeline's editor-space
-        // width, but sourceStart/sourceEnd are source-space - a clip playing
-        // at 2x covers twice as many source seconds per dragged editor
-        // second, so the delta must be rescaled by the clip's own speed.
-        let editorDelta = Double((point.x - dragStartPoint.x) / max(timelineRect.width, 1))
-            * startTimeline.duration
-        let delta = editorDelta * original.speed
+        let delta: TimeInterval
+        if let reveal = trimReveal,
+           reveal.clipID == clipID,
+           let revealRect = clipRect(for: clipID, in: reveal.displayTimeline) {
+            let pointsPerSourceSecond = revealRect.width / CGFloat(reveal.availableClip.duration)
+            delta = Double(
+                (point.x - dragStartPoint.x) / max(pointsPerSourceSecond, 0.000_001)
+            )
+        } else {
+            // sourceStart/sourceEnd are in source-space, so editor drag time
+            // must include this clip's playback speed.
+            let editorDelta = Double((point.x - dragStartPoint.x) / max(timelineRect.width, 1))
+                * startTimeline.duration
+            delta = editorDelta * original.speed
+        }
         let previousEnd = index > 0 ? startTimeline.segments[index - 1].sourceEnd : 0
         let nextStart = index + 1 < startTimeline.segments.count
             ? startTimeline.segments[index + 1].sourceStart
@@ -501,40 +595,75 @@ final class RecordingClipTimelineControl: NSView {
             )
         }
         timeline = startTimeline.replacing(replacement)
+        publishDisplayTimelineIfNeeded()
+        let previewSourceTime = edge == .leading
+            ? replacement.sourceStart
+            : replacement.sourceEnd
+        trimPreviewSourceTimeDidChange?(previewSourceTime)
     }
 
-    private func edgeHit(at point: CGPoint) -> (clipID: UUID, edge: Edge)? {
-        let candidates = timeline.segments.flatMap { clip -> [(UUID, Edge, CGFloat)] in
-            guard let rect = clipRect(for: clip.id) else { return [] }
+    private func edgeHit(at point: CGPoint) -> EdgeHit? {
+        let trimPreview = trimPreviewGeometry()
+        let candidates = timeline.segments.flatMap { clip -> [EdgeHit] in
+            let rect = trimPreview?.clipID == clip.id
+                ? trimPreview?.keptRect
+                : clipRect(for: clip.id)
+            guard let rect else { return [] }
             return [
-                (clip.id, .leading, abs(point.x - rect.minX)),
-                (clip.id, .trailing, abs(point.x - rect.maxX))
+                EdgeHit(
+                    clipID: clip.id,
+                    edge: .leading,
+                    distance: abs(point.x - rect.minX)
+                ),
+                EdgeHit(
+                    clipID: clip.id,
+                    edge: .trailing,
+                    distance: abs(point.x - rect.maxX)
+                )
             ]
         }
-        .filter { $0.2 <= Metrics.handleHitWidth }
+        .filter { $0.distance <= Metrics.handleHitWidth }
         .sorted { lhs, rhs in
-            let lhsIsSelected = lhs.0 == selectedClipID
-            let rhsIsSelected = rhs.0 == selectedClipID
+            let lhsIsSelected = lhs.clipID == selectedClipID
+            let rhsIsSelected = rhs.clipID == selectedClipID
             if lhsIsSelected != rhsIsSelected {
                 return lhsIsSelected
             }
-            return lhs.2 < rhs.2
+            return lhs.distance < rhs.distance
         }
 
-        guard let closest = candidates.first else { return nil }
-        return (closest.0, closest.1)
+        return candidates.first
     }
 
-    private func clipRect(for clipID: UUID) -> CGRect? {
-        guard let index = timeline.segments.firstIndex(where: { $0.id == clipID }),
-              let range = timeline.editorRange(for: clipID),
-              timeline.duration > 0 else { return nil }
-        let rawMinX = xPosition(for: range.lowerBound)
-        let rawMaxX = xPosition(for: range.upperBound)
+    private var displayTimeline: RecordingClipTimeline {
+        activeDisplayTimeline ?? timeline
+    }
+
+    private var activeDisplayTimeline: RecordingClipTimeline? {
+        trimPreviewGeometry() == nil ? nil : trimReveal?.displayTimeline
+    }
+
+    private func publishDisplayTimelineIfNeeded() {
+        let next = activeDisplayTimeline
+        guard next != publishedDisplayTimeline else { return }
+        publishedDisplayTimeline = next
+        displayTimelineDidChange?(next)
+    }
+
+    private func clipRect(
+        for clipID: UUID,
+        in displayedTimeline: RecordingClipTimeline? = nil
+    ) -> CGRect? {
+        let displayedTimeline = displayedTimeline ?? timeline
+        guard let index = displayedTimeline.segments.firstIndex(where: { $0.id == clipID }),
+              let range = displayedTimeline.editorRange(for: clipID),
+              displayedTimeline.duration > 0 else { return nil }
+        let rawMinX = xPosition(for: range.lowerBound, in: displayedTimeline)
+        let rawMaxX = xPosition(for: range.upperBound, in: displayedTimeline)
         let leadingInset = index == 0
             ? Metrics.trackInset
             : Metrics.splitGap / 2
-        let trailingInset = index == timeline.segments.count - 1
+        let trailingInset = index == displayedTimeline.segments.count - 1
             ? Metrics.trackInset
             : Metrics.splitGap / 2
         let minX = rawMinX + leadingInset
@@ -548,15 +677,51 @@ final class RecordingClipTimelineControl: NSView {
     }
 
     private func xPosition(for editorTime: TimeInterval) -> CGFloat {
-        guard timeline.duration > 0 else { return timelineRect.minX }
-        let fraction = min(max(editorTime / timeline.duration, 0), 1)
+        guard let displayedTimeline = activeDisplayTimeline else {
+            return xPosition(for: editorTime, in: timeline)
+        }
+        let sourceTime = timeline.sourceTime(at: editorTime)
+        guard let displayedTime = displayedTimeline.editorTime(forSourceTime: sourceTime) else {
+            return xPosition(for: editorTime, in: timeline)
+        }
+        return xPosition(for: displayedTime, in: displayedTimeline)
+    }
+
+    private func xPosition(
+        for editorTime: TimeInterval,
+        in displayedTimeline: RecordingClipTimeline
+    ) -> CGFloat {
+        guard displayedTimeline.duration > 0 else { return timelineRect.minX }
+        let fraction = min(max(editorTime / displayedTimeline.duration, 0), 1)
         return timelineRect.minX + CGFloat(fraction) * timelineRect.width
     }
 
     private func editorTime(forX x: CGFloat) -> TimeInterval {
-        guard timeline.duration > 0, timelineRect.width > 0 else { return 0 }
+        let displayedTime = displayEditorTime(forX: x)
+        guard let displayedTimeline = activeDisplayTimeline else { return displayedTime }
+        guard let displayedLocation = displayedTimeline.location(at: displayedTime) else {
+            return 0
+        }
+        if let editorTime = timeline.editorTime(forSourceTime: displayedLocation.sourceTime) {
+            return editorTime
+        }
+        guard let keptClip = timeline.segments.first(where: {
+            $0.id == displayedLocation.segmentID
+        }), let keptRange = timeline.editorRange(for: keptClip.id) else {
+            return displayedLocation.sourceTime < (timeline.segments.first?.sourceStart ?? 0)
+                ? 0
+                : timeline.duration
+        }
+        return displayedLocation.sourceTime < keptClip.sourceStart
+            ? keptRange.lowerBound
+            : keptRange.upperBound
+    }
+
+    private func displayEditorTime(forX x: CGFloat) -> TimeInterval {
+        let displayedTimeline = displayTimeline
+        guard displayedTimeline.duration > 0, timelineRect.width > 0 else { return 0 }
         let fraction = min(max((x - timelineRect.minX) / timelineRect.width, 0), 1)
-        return Double(fraction) * timeline.duration
+        return Double(fraction) * displayedTimeline.duration
     }
 
     private func drawTrack() {
@@ -569,8 +734,10 @@ final class RecordingClipTimelineControl: NSView {
     }
 
     private func drawClips(in dirtyRect: CGRect) {
-        for clip in timeline.segments {
-            guard let rect = clipRect(for: clip.id), rect.intersects(dirtyRect) else { continue }
+        let displayedTimeline = displayTimeline
+        for clip in displayedTimeline.segments {
+            guard let rect = clipRect(for: clip.id, in: displayedTimeline),
+                  rect.intersects(dirtyRect) else { continue }
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(
                 roundedRect: rect,
@@ -582,6 +749,135 @@ final class RecordingClipTimelineControl: NSView {
             rect.intersection(dirtyRect).fill()
             NSGraphicsContext.restoreGraphicsState()
         }
+    }
+
+    private func drawTrimOverlay() {
+        guard let preview = trimPreviewGeometry() else { return }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(
+            roundedRect: preview.originalRect,
+            xRadius: clipRadius(for: preview.originalRect),
+            yRadius: clipRadius(for: preview.originalRect)
+        ).addClip()
+        NSColor.black.withAlphaComponent(0.62).setFill()
+        if preview.keptRect.minX > preview.originalRect.minX {
+            CGRect(
+                x: preview.originalRect.minX,
+                y: preview.originalRect.minY,
+                width: preview.keptRect.minX - preview.originalRect.minX,
+                height: preview.originalRect.height
+            ).fill()
+        }
+        if preview.keptRect.maxX < preview.originalRect.maxX {
+            CGRect(
+                x: preview.keptRect.maxX,
+                y: preview.originalRect.minY,
+                width: preview.originalRect.maxX - preview.keptRect.maxX,
+                height: preview.originalRect.height
+            ).fill()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+
+        drawTrimRangeLabel(
+            from: preview.editorStart,
+            to: preview.editorEnd,
+            in: preview.keptRect
+        )
+    }
+
+    private func trimPreviewGeometry() -> TrimPreviewGeometry? {
+        guard let reveal = trimReveal,
+              reveal.availableClip.duration > 0,
+              let replacement = timeline.segments.first(where: { $0.id == reveal.clipID }),
+              replacement.sourceStart >= reveal.availableClip.sourceStart,
+              replacement.sourceEnd <= reveal.availableClip.sourceEnd,
+              replacement.sourceStart > reveal.availableClip.sourceStart + 0.000_001
+                || replacement.sourceEnd < reveal.availableClip.sourceEnd - 0.000_001,
+              let editorRange = reveal.displayTimeline.editorRange(for: reveal.clipID),
+              let originalRect = clipRect(
+                for: reveal.clipID,
+                in: reveal.displayTimeline
+              ) else {
+            return nil
+        }
+
+        let leadingFraction = CGFloat(
+            (replacement.sourceStart - reveal.availableClip.sourceStart)
+                / reveal.availableClip.duration
+        )
+        let trailingFraction = CGFloat(
+            (replacement.sourceEnd - reveal.availableClip.sourceStart)
+                / reveal.availableClip.duration
+        )
+        let keptMinX = originalRect.minX + leadingFraction * originalRect.width
+        let keptMaxX = originalRect.minX + trailingFraction * originalRect.width
+        let keptRect = CGRect(
+            x: keptMinX,
+            y: originalRect.minY,
+            width: max(1, keptMaxX - keptMinX),
+            height: originalRect.height
+        )
+        let editorStart = editorRange.lowerBound
+            + (replacement.sourceStart - reveal.availableClip.sourceStart)
+                / reveal.availableClip.speed
+        let editorEnd = editorRange.lowerBound
+            + (replacement.sourceEnd - reveal.availableClip.sourceStart)
+                / reveal.availableClip.speed
+        return TrimPreviewGeometry(
+            clipID: reveal.clipID,
+            originalRect: originalRect,
+            keptRect: keptRect,
+            editorStart: editorStart,
+            editorEnd: editorEnd
+        )
+    }
+
+    private func drawTrimRangeLabel(
+        from start: TimeInterval,
+        to end: TimeInterval,
+        in rect: CGRect
+    ) {
+        let label = "\(trimTimeLabel(start))  to  \(trimTimeLabel(end))" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold),
+            .foregroundColor: NSColor.white
+        ]
+        let textSize = label.size(withAttributes: attributes)
+        let horizontalPadding: CGFloat = 8
+        let verticalPadding: CGFloat = 4
+        let pillWidth = min(textSize.width + horizontalPadding * 2, max(rect.width - 8, 0))
+        guard pillWidth >= 58, rect.height >= textSize.height + verticalPadding * 2 else { return }
+
+        let pillRect = CGRect(
+            x: min(
+                max(rect.midX - pillWidth / 2, rect.minX + 4),
+                rect.maxX - pillWidth - 4
+            ),
+            y: rect.minY + 5,
+            width: pillWidth,
+            height: textSize.height + verticalPadding * 2
+        )
+        NSColor.black.withAlphaComponent(0.74).setFill()
+        NSBezierPath(
+            roundedRect: pillRect,
+            xRadius: pillRect.height / 2,
+            yRadius: pillRect.height / 2
+        ).fill()
+        label.draw(
+            at: CGPoint(
+                x: pillRect.midX - textSize.width / 2,
+                y: pillRect.midY - textSize.height / 2
+            ),
+            withAttributes: attributes
+        )
+    }
+
+    private func trimTimeLabel(_ time: TimeInterval) -> String {
+        let safeTime = max(0, time.isFinite ? time : 0)
+        let minutes = Int(safeTime) / 60
+        let seconds = safeTime - Double(minutes * 60)
+        return String(format: "%02d:%04.1f", minutes, seconds)
     }
 
     private func drawThumbnails(in rect: CGRect, clip: RecordingClipSegment, dirtyRect: CGRect) {
@@ -690,13 +986,6 @@ final class RecordingClipTimelineControl: NSView {
         )
     }
 
-    private func drawHoverSkimmer() {
-        guard let hoverTime, dragTarget == nil else { return }
-        let x = xPosition(for: hoverTime)
-        NSColor.controlAccentColor.withAlphaComponent(0.42).setFill()
-        CGRect(x: x - 0.5, y: timelineRect.minY, width: 1, height: timelineRect.height).fill()
-    }
-
     private var selectionColor: NSColor {
         NSColor(srgbRed: 1, green: 212.0 / 255.0, blue: 0, alpha: 1)
     }
@@ -706,8 +995,12 @@ final class RecordingClipTimelineControl: NSView {
     }
 
     private func selectionGeometry() -> (video: CGRect, outer: CGRect, radius: CGFloat)? {
-        guard let selectedClipID,
-              let baseRect = clipRect(for: selectedClipID),
+        guard let selectedClipID else { return nil }
+        let trimPreview = trimPreviewGeometry()
+        let baseRect = trimPreview?.clipID == selectedClipID
+            ? trimPreview?.keptRect
+            : clipRect(for: selectedClipID)
+        guard let baseRect,
               baseRect.width > 1 else { return nil }
         let outerRect = baseRect.insetBy(
             dx: -Metrics.selectionPadding,
@@ -737,12 +1030,13 @@ final class RecordingClipTimelineControl: NSView {
 
     private func drawSelectionGrooves() {
         guard let geometry = selectionGeometry() else { return }
-        guard geometry.video.width > Metrics.selectionHandleInset * 4 else { return }
+        let handleRect = geometry.video
+        guard handleRect.width > Metrics.selectionHandleInset * 4 else { return }
 
-        let grooveY = geometry.video.midY - Metrics.selectionHandleGrooveHeight / 2
+        let grooveY = handleRect.midY - Metrics.selectionHandleGrooveHeight / 2
         let grooveCenters = [
-            geometry.video.minX + Metrics.selectionHandleInset,
-            geometry.video.maxX - Metrics.selectionHandleInset
+            handleRect.minX + Metrics.selectionHandleInset,
+            handleRect.maxX - Metrics.selectionHandleInset
         ]
 
         NSGraphicsContext.saveGraphicsState()

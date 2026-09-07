@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
 enum AnnotationRenderer {
     /// `CIContext` is immutable after creation and documented for reuse across
     /// render calls (same contract as `AnnotationMockupEffectsRenderer`).
-    nonisolated(unsafe) private static let ciContext = CIContext(options: [.cacheIntermediates: false])
+    nonisolated private static let ciContext = CIContext(options: [.cacheIntermediates: false])
 
     /// Off-main variants: large exports (full-resolution compose + Core Image
     /// blur) are slow enough to beachball the UI, and the whole render graph
