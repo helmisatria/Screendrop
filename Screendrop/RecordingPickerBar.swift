@@ -215,8 +215,7 @@ struct RecordingPickerControls: View {
     /// Backs out of the picker without recording: stop any warm camera
     /// preview so it doesn't keep running in the background.
     private func dismissPicker() {
-        RecordingBarPresenter.shared.hide()
-        Task { await CameraRecordingManager.shared.stopPreview() }
+        RecordingBarPresenter.shared.dismissPicker()
     }
 
     // MARK: Input toggles
@@ -226,7 +225,7 @@ struct RecordingPickerControls: View {
             selectCamera(RecordingDeviceCatalog.cameras().first?.uniqueID)
         } else {
             cameraID = ""
-            Task { await CameraRecordingManager.shared.stopPreview() }
+            CameraRecordingManager.shared.requestPreviewStop()
         }
     }
 
@@ -271,7 +270,7 @@ struct RecordingPickerControls: View {
                         selectCamera(device.uniqueID)
                     } else {
                         cameraID = ""
-                        Task { await CameraRecordingManager.shared.stopPreview() }
+                        CameraRecordingManager.shared.requestPreviewStop()
                     }
                 }
             )) {
@@ -366,7 +365,9 @@ struct RecordingPickerControls: View {
     private func selectCamera(_ deviceID: String?) {
         guard let deviceID else { return }
         Task { @MainActor in
+            guard RecordingBarPresenter.shared.isPickerVisible else { return }
             let authorized = await RecordingInputAuthorization.ensureAccess(for: .camera)
+            guard RecordingBarPresenter.shared.isPickerVisible else { return }
             cameraID = authorized ? deviceID : ""
             if authorized {
                 await warmCameraPreview()
