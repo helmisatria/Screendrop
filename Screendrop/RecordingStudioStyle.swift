@@ -22,7 +22,7 @@ struct RecordingCameraBubbleSettings: Equatable {
 }
 
 struct RecordingEditDocument: Codable, Equatable {
-    var formatVersion = 5
+    var formatVersion = 7
     var style: StoredRecordingStudioStyle
     var zoomEnabled: Bool
     var zoomCues: [ZoomCue]
@@ -62,6 +62,12 @@ struct RecordingEditDocument: Codable, Equatable {
     var replacementAudioDisplayName: String?
     /// Raw RecordingAudioFormat value for the audio-only export.
     var audioExportFormat: String?
+    /// Static, non-destructive gain for each recorded source track.
+    var systemAudioGainDB: Double?
+    var microphoneAudioGainDB: Double?
+    /// Present only after a recorded track is edited independently. Missing
+    /// tracks continue to follow the video cuts, preserving older projects.
+    var audioTrackEdits: [RecordingAudioTrackEdit]?
 
     private enum CodingKeys: String, CodingKey {
         case formatVersion
@@ -90,6 +96,9 @@ struct RecordingEditDocument: Codable, Equatable {
         case replacementAudioFileName
         case replacementAudioDisplayName
         case audioExportFormat
+        case systemAudioGainDB
+        case microphoneAudioGainDB
+        case audioTrackEdits
     }
 
     init(
@@ -111,7 +120,10 @@ struct RecordingEditDocument: Codable, Equatable {
         videoCropRect: CGRect? = nil,
         replacementAudioFileName: String? = nil,
         replacementAudioDisplayName: String? = nil,
-        audioExportFormat: RecordingAudioFormat? = nil
+        audioExportFormat: RecordingAudioFormat? = nil,
+        systemAudioGainDB: Double? = nil,
+        microphoneAudioGainDB: Double? = nil,
+        audioTrackEdits: [RecordingAudioTrackEdit]? = nil
     ) {
         self.style = StoredRecordingStudioStyle(style)
         self.zoomEnabled = zoomEnabled
@@ -141,6 +153,9 @@ struct RecordingEditDocument: Codable, Equatable {
         self.replacementAudioFileName = replacementAudioFileName
         self.replacementAudioDisplayName = replacementAudioDisplayName
         self.audioExportFormat = audioExportFormat.map(\.rawValue)
+        self.systemAudioGainDB = systemAudioGainDB
+        self.microphoneAudioGainDB = microphoneAudioGainDB
+        self.audioTrackEdits = audioTrackEdits
     }
 
     var audioExportFormatValue: RecordingAudioFormat {
@@ -225,6 +240,15 @@ struct RecordingEditDocument: Codable, Equatable {
             forKey: .replacementAudioDisplayName
         )
         audioExportFormat = try container.decodeIfPresent(String.self, forKey: .audioExportFormat)
+        systemAudioGainDB = try container.decodeIfPresent(Double.self, forKey: .systemAudioGainDB)
+        microphoneAudioGainDB = try container.decodeIfPresent(
+            Double.self,
+            forKey: .microphoneAudioGainDB
+        )
+        audioTrackEdits = try container.decodeIfPresent(
+            [RecordingAudioTrackEdit].self,
+            forKey: .audioTrackEdits
+        )
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -255,6 +279,9 @@ struct RecordingEditDocument: Codable, Equatable {
             forKey: .replacementAudioDisplayName
         )
         try container.encodeIfPresent(audioExportFormat, forKey: .audioExportFormat)
+        try container.encodeIfPresent(systemAudioGainDB, forKey: .systemAudioGainDB)
+        try container.encodeIfPresent(microphoneAudioGainDB, forKey: .microphoneAudioGainDB)
+        try container.encodeIfPresent(audioTrackEdits, forKey: .audioTrackEdits)
     }
 }
 

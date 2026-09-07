@@ -80,6 +80,11 @@ nonisolated final class RecordingAudioExporter: @unchecked Sendable {
         /// audio is ignored and the file is simply transcoded, clamped to
         /// the edited timeline's length.
         let replacementURL: URL?
+        /// Static dB gain for each recorded track, in source order.
+        /// Ignored when a replacement soundtrack is present.
+        let recordedAudioGainsDB: [Double]
+        let audioTrackEdits: [RecordingAudioTrackEdit]
+        let audioTrackKinds: [RecordingAudioTrackKind]
         let format: RecordingAudioFormat
     }
 
@@ -115,7 +120,11 @@ nonisolated final class RecordingAudioExporter: @unchecked Sendable {
             try RecordingCompositionBuilder.makeAsset(
                 from: sourceAsset,
                 timeline: timeline,
-                sourceDuration: sourceDuration
+                sourceDuration: sourceDuration,
+                audioTrackEdits: configuration.audioTrackEdits.isEmpty
+                    ? nil
+                    : configuration.audioTrackEdits,
+                audioTrackKinds: configuration.audioTrackKinds
             )
         }
 
@@ -132,6 +141,13 @@ nonisolated final class RecordingAudioExporter: @unchecked Sendable {
             duration: CMTime(seconds: duration, preferredTimescale: 600)
         )
         let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: nil)
+        if configuration.replacementURL == nil {
+            output.audioMix = RecordingAudioGainMix.make(
+                tracks: tracks,
+                gainsDB: configuration.recordedAudioGainsDB,
+                trackEdits: configuration.audioTrackEdits
+            )
+        }
         output.alwaysCopiesSampleData = false
         reader.add(output)
 

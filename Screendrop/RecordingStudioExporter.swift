@@ -55,6 +55,12 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
         /// audio. It is already the finished cut's audio, so it plays flat
         /// from zero instead of being re-cut through the clip timeline.
         let audioReplacementURL: URL?
+        /// Static dB gain for each recorded source track, in source order.
+        /// Ignored when a replacement soundtrack is present.
+        let recordedAudioGainsDB: [Double]
+        /// Independent recorded-audio placement, in source-track order.
+        let audioTrackEdits: [RecordingAudioTrackEdit]
+        let audioTrackKinds: [RecordingAudioTrackKind]
         /// Non-nil when exporting into a different aspect ratio; drives the
         /// crop-and-follow virtual camera in place of the zoom viewport.
         let reframe: ReframeTrack?
@@ -82,6 +88,9 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
             clipTimeline: RecordingClipTimeline,
             exportSettings: VideoCompressionSettings,
             audioReplacementURL: URL? = nil,
+            recordedAudioGainsDB: [Double] = [],
+            audioTrackEdits: [RecordingAudioTrackEdit] = [],
+            audioTrackKinds: [RecordingAudioTrackKind] = [],
             reframe: ReframeTrack? = nil,
             fitContentAspect: CGFloat? = nil
         ) {
@@ -102,6 +111,9 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
             self.clipTimeline = clipTimeline
             self.exportSettings = exportSettings
             self.audioReplacementURL = audioReplacementURL
+            self.recordedAudioGainsDB = recordedAudioGainsDB
+            self.audioTrackEdits = audioTrackEdits
+            self.audioTrackKinds = audioTrackKinds
             self.reframe = reframe
             self.fitContentAspect = fitContentAspect
         }
@@ -163,7 +175,11 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
         let screenAsset = try RecordingCompositionBuilder.makeAsset(
             from: sourceAsset,
             timeline: clipTimeline,
-            sourceDuration: sourceDuration
+            sourceDuration: sourceDuration,
+            audioTrackEdits: configuration.audioTrackEdits.isEmpty
+                ? nil
+                : configuration.audioTrackEdits,
+            audioTrackKinds: configuration.audioTrackKinds
         )
         guard let videoTrack = try await screenAsset.loadTracks(withMediaType: .video).first else {
             throw ExportError.noVideoTrack
@@ -221,6 +237,11 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
                 let output = AVAssetReaderAudioMixOutput(
                     audioTracks: audioTracks,
                     audioSettings: nil
+                )
+                output.audioMix = RecordingAudioGainMix.make(
+                    tracks: audioTracks,
+                    gainsDB: configuration.recordedAudioGainsDB,
+                    trackEdits: configuration.audioTrackEdits
                 )
                 output.alwaysCopiesSampleData = false
                 screenReader.add(output)

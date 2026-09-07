@@ -107,6 +107,7 @@ private struct RecordingStudioContent: View {
             configureCloseGuard()
             closeGuard.attach(to: window)
             closeGuard.refreshDocumentEdited()
+            restoreKeyWindow(window)
         }
         .onChange(of: model.hasUnsavedChanges) {
             configureCloseGuard()
@@ -115,6 +116,8 @@ private struct RecordingStudioContent: View {
         .onDeleteCommand {
             if let selectedCueID = model.selectedCueID {
                 model.removeZoomCue(id: selectedCueID)
+            } else if model.selectedAudioClipID != nil {
+                model.deleteSelectedAudioClip()
             } else if model.selectedClipID != nil {
                 model.deleteSelectedClip()
             }
@@ -210,6 +213,19 @@ private struct RecordingStudioContent: View {
             case .cancel:
                 break
             }
+        }
+    }
+
+    private func restoreKeyWindow(_ window: NSWindow?) {
+        guard let window else { return }
+
+        // The app changes from a menu-bar accessory to a regular app while
+        // Studio opens. Give macOS one run-loop pass to finish that change,
+        // then make Studio key so popovers receive the active control state.
+        DispatchQueue.main.async { [weak window] in
+            guard let window, window.isVisible else { return }
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
         }
     }
 
@@ -1412,21 +1428,45 @@ private struct StudioTimelineEditor: View {
                 Color.clear
                     .frame(height: StudioTimelineMetrics.playheadLaneHeight)
 
-                StudioTimelineRuler(
-                    duration: displayTimeline.duration,
-                    pointsPerSecond: scale.pointsPerSecond,
-                    scrollX: scrollX,
-                    onHover: { time in
-                        previewTimeline(atDisplayTime: time)
-                    },
-                    onScrub: { time in
-                        model.pause()
-                        model.seek(to: editorTime(forDisplayTime: time))
-                    }
-                )
-                .frame(height: StudioTimelineMetrics.rulerHeight)
+                VStack(spacing: 0) {
+                    VStack(spacing: 0) {
+                        StudioTimelineRuler(
+                            duration: displayTimeline.duration,
+                            pointsPerSecond: scale.pointsPerSecond,
+                            scrollX: scrollX,
+                            onHover: { time in
+                                previewTimeline(atDisplayTime: time)
+                            },
+                            onScrub: { time in
+                                model.pause()
+                                model.seek(to: editorTime(forDisplayTime: time))
+                            }
+                        )
+                        .frame(height: StudioTimelineMetrics.rulerHeight)
 
-                scrollingLanes(scale: scale)
+                        StudioTimelineScrubSurface(
+                            duration: displayTimeline.duration,
+                            pointsPerSecond: scale.pointsPerSecond,
+                            scrollX: scrollX,
+                            onHover: { time in
+                                previewTimeline(atDisplayTime: time)
+                            },
+                            onScrub: { time in
+                                model.pause()
+                                model.seek(to: editorTime(forDisplayTime: time))
+                            }
+                        )
+                        .frame(height: StudioTimelineMetrics.rowSpacing)
+                    }
+                    .background {
+                        StudioTimelineZoomEventMonitor { factor, viewportX in
+                            let anchorTime = scale.time(forX: viewportX + scrollX)
+                            applyZoom(factor: factor, anchorTime: anchorTime)
+                        }
+                    }
+
+                    scrollingLanes(scale: scale)
+                }
             }
             .overlay {
                 ZStack {
@@ -1453,12 +1493,12 @@ private struct StudioTimelineEditor: View {
                 clampZoom()
             }
         }
-        .frame(height: StudioTimelineMetrics.lanesHeight)
+        .frame(height: StudioTimelineMetrics.lanesHeight(audioTrackCount: model.recordedAudioTracks.count))
         .onChange(of: displayTimeline.duration) { _, _ in clampZoom() }
         .onChange(of: model.currentTime) { _, _ in followPlayhead() }
     }
 
-    /// The two lanes that carry real edit targets live in a horizontal scroll
+    /// The lanes that carry real edit targets live in a horizontal scroll
     /// view sized to the zoomed timeline. The ruler, playhead and lane chrome
     /// stay viewport-sized and redraw against `scrollX` instead - a rounded
     /// rectangle or Canvas tens of thousands of points wide would be a single
@@ -1470,6 +1510,25 @@ private struct StudioTimelineEditor: View {
                     .frame(height: StudioTimelineMetrics.clipLaneHeight)
                 StudioZoomLaneBackground()
                     .frame(height: StudioTimelineMetrics.zoomLaneHeight)
+                ForEach(model.recordedAudioTracks) { track in
+                    StudioAudioWaveformLane(
+                        track: track,
+                        clips: model.audioTrackEdits.first { $0.kind == track.kind }?.clips ?? [],
+                        pointsPerSecond: scale.pointsPerSecond,
+                        scrollX: scrollX,
+                        gainDB: model.audioGainDB(for: track.kind),
+                        isSelected: model.selectedAudioTrackKind == track.kind,
+                        selectedClipID: model.selectedAudioTrackKind == track.kind
+                            ? model.selectedAudioClipID
+                            : nil,
+                        isInactive: model.replacementAudio != nil,
+                        onZoom: { factor, viewportX in
+                            let anchorTime = scale.time(forX: viewportX + scrollX)
+                            applyZoom(factor: factor, anchorTime: anchorTime)
+                        }
+                    )
+                    .frame(height: StudioTimelineMetrics.audioLaneHeight)
+                }
                 Color.clear
                     .frame(height: StudioTimelineMetrics.scrollerGutter)
             }
@@ -1485,12 +1544,66 @@ private struct StudioTimelineEditor: View {
                     StudioZoomLane(
                         model: model,
                         scale: scale,
-                        visibleRange: scale.visibleRange(scrollX: scrollX)
+                        visibleRange: scale.visibleRange(scrollX: scrollX),
+                        onZoom: { factor, anchorTime in
+                            applyZoom(factor: factor, anchorTime: anchorTime)
+                        }
                     )
                     .frame(
                         width: scale.contentWidth,
                         height: StudioTimelineMetrics.zoomLaneHeight
                     )
+
+                    ForEach(model.recordedAudioTracks) { track in
+                        RecordingAudioClipTimelineView(
+                            trackKind: track.kind,
+                            clips: model.audioTrackEdits.first { $0.kind == track.kind }?.clips ?? [],
+                            selectedClipID: model.selectedAudioTrackKind == track.kind
+                                ? model.selectedAudioClipID
+                                : nil,
+                            timelineDuration: model.duration,
+                            pointsPerSecond: scale.pointsPerSecond,
+                            isInactive: model.replacementAudio != nil,
+                            onSelectClip: { id in
+                                model.selectAudioClip(id, in: track.kind)
+                            },
+                            onSeek: { time in
+                                model.pause()
+                                model.seek(to: time)
+                            },
+                            onBeginEdit: {
+                                model.beginAudioClipEdit()
+                            },
+                            onMove: { start in
+                                model.moveSelectedAudioClip(
+                                    to: start,
+                                    snapThreshold: 8 / Double(scale.pointsPerSecond)
+                                )
+                            },
+                            onTrimLeading: { start in
+                                model.trimSelectedAudioClipLeadingEdge(
+                                    to: start,
+                                    snapThreshold: 8 / Double(scale.pointsPerSecond)
+                                )
+                            },
+                            onTrimTrailing: { end in
+                                model.trimSelectedAudioClipTrailingEdge(
+                                    to: end,
+                                    snapThreshold: 8 / Double(scale.pointsPerSecond)
+                                )
+                            },
+                            onEndEdit: { actionName in
+                                model.endAudioClipEdit(actionName: actionName)
+                            },
+                            onSelectTrack: {
+                                model.selectAudioTrack(track.kind)
+                            }
+                        )
+                            .frame(
+                                width: scale.contentWidth,
+                                height: StudioTimelineMetrics.audioLaneHeight
+                            )
+                    }
 
                     Color.clear
                         .frame(height: StudioTimelineMetrics.scrollerGutter)
@@ -1507,7 +1620,11 @@ private struct StudioTimelineEditor: View {
                 }
             }
         }
-        .frame(height: StudioTimelineMetrics.scrollingLanesHeight)
+        .frame(
+            height: StudioTimelineMetrics.scrollingLanesHeight(
+                audioTrackCount: model.recordedAudioTracks.count
+            )
+        )
     }
 
     private var clipLane: some View {
@@ -1723,8 +1840,12 @@ private struct StudioTimelineEditor: View {
             HStack(spacing: 2) {
                 Spacer(minLength: 0)
 
-                timelineButton("Split at Playhead", systemImage: "scissors") {
+            timelineButton("Split at Playhead", systemImage: "scissors") {
+                if model.selectedAudioClipID != nil {
+                    model.splitSelectedAudioClip(at: model.currentTime)
+                } else {
                     model.splitClip(at: model.currentTime)
+                }
                 }
                 .keyboardShortcut("t", modifiers: [])
 
@@ -1798,12 +1919,16 @@ private struct StudioTimelineEditor: View {
     }
 
     private var canDeleteSelection: Bool {
-        model.selectedCueID != nil || model.canDeleteSelectedClip
+        model.selectedCueID != nil
+            || model.selectedAudioClipID != nil
+            || model.canDeleteSelectedClip
     }
 
     private func deleteSelection() {
         if let cueID = model.selectedCueID {
             model.removeZoomCue(id: cueID)
+        } else if model.selectedAudioClipID != nil {
+            model.deleteSelectedAudioClip()
         } else if model.selectedClipID != nil {
             model.deleteSelectedClip()
         }
@@ -1838,20 +1963,155 @@ private struct TransportIconButtonStyle: ButtonStyle {
     }
 }
 
+private struct StudioAudioWaveformLane: View {
+    let track: RecordingAudioTrack
+    let clips: [RecordingAudioClipSegment]
+    let pointsPerSecond: CGFloat
+    let scrollX: CGFloat
+    let gainDB: Double
+    let isSelected: Bool
+    let selectedClipID: UUID?
+    let isInactive: Bool
+    let onZoom: (Double, CGFloat) -> Void
+
+    private var tint: Color {
+        switch track.kind {
+        case .system: .cyan
+        case .microphone: .green
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(isSelected ? 0.09 : 0.045))
+
+            if let waveform = track.waveform {
+                Canvas { context, size in
+                    let centerY = size.height / 2
+                    let maximumHeight = max(centerY - 4, 1)
+                    let gain = Float(pow(10, gainDB / 20))
+                    var sourcePath = Path()
+                    var adjustedPath = Path()
+
+                    for clip in clips {
+                        let x = CGFloat(clip.timelineStart) * pointsPerSecond - scrollX
+                        let width = CGFloat(clip.timelineDuration) * pointsPerSecond
+                        guard x + width >= 0, x <= size.width else { continue }
+                        let rect = CGRect(x: x, y: 0, width: width, height: size.height)
+                        context.fill(
+                            Path(roundedRect: rect, cornerRadius: 7),
+                            with: .color(
+                                tint.opacity(clip.id == selectedClipID ? 0.12 : 0.035)
+                            )
+                        )
+                    }
+
+                    for pixel in stride(from: CGFloat.zero, through: size.width, by: 1) {
+                        let editorTime = Double((scrollX + pixel) / max(pointsPerSecond, 0.001))
+                        guard let clip = clips.first(where: {
+                            editorTime >= $0.timelineStart && editorTime <= $0.timelineEnd
+                        }) else {
+                            continue
+                        }
+                        let sourceTime = clip.sourceTime(at: editorTime)
+                        let sourcePeak = min(max(waveform.peak(at: sourceTime), 0), 1)
+                        let adjustedPeak = min(sourcePeak * gain, 1)
+                        let sourceHeight = max(CGFloat(sourcePeak) * maximumHeight, 0.5)
+                        let adjustedHeight = max(CGFloat(adjustedPeak) * maximumHeight, 0.5)
+
+                        sourcePath.move(to: CGPoint(x: pixel, y: centerY - sourceHeight))
+                        sourcePath.addLine(to: CGPoint(x: pixel, y: centerY + sourceHeight))
+                        adjustedPath.move(to: CGPoint(x: pixel, y: centerY - adjustedHeight))
+                        adjustedPath.addLine(to: CGPoint(x: pixel, y: centerY + adjustedHeight))
+                    }
+
+                    context.stroke(sourcePath, with: .color(tint.opacity(0.18)), lineWidth: 1)
+                    context.stroke(adjustedPath, with: .color(tint.opacity(0.78)), lineWidth: 1)
+
+                    for clip in clips {
+                        let x = CGFloat(clip.timelineStart) * pointsPerSecond - scrollX
+                        let width = CGFloat(clip.timelineDuration) * pointsPerSecond
+                        guard x + width >= 0, x <= size.width else { continue }
+                        let rect = CGRect(x: x, y: 0.5, width: width, height: size.height - 1)
+                        context.stroke(
+                            Path(roundedRect: rect, cornerRadius: 7),
+                            with: .color(
+                                clip.id == selectedClipID
+                                    ? tint.opacity(0.95)
+                                    : tint.opacity(0.22)
+                            ),
+                            lineWidth: clip.id == selectedClipID ? 1.5 : 0.5
+                        )
+                    }
+                }
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("Analyzing waveform…")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: track.kind.systemImage)
+                Text(track.kind.title)
+                Spacer(minLength: 8)
+                Text(
+                    InspectorValueFormat.audioVolumePercent()
+                        .displayString(for: CGFloat(gainDB))
+                )
+                    .monospacedDigit()
+            }
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(
+                isInactive ? Color.secondary : Color.primary.opacity(0.82)
+            )
+            .padding(.horizontal, 9)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(
+                    isSelected ? tint.opacity(0.9) : Color.primary.opacity(0.08),
+                    lineWidth: isSelected ? 1.5 : 0.5
+                )
+        }
+        .background {
+            StudioTimelineZoomEventMonitor(onZoom: onZoom)
+        }
+        .opacity(isInactive ? 0.45 : 1)
+        .accessibilityLabel(track.kind.title)
+        .accessibilityValue(
+            "\(InspectorValueFormat.audioVolumePercent().displayString(for: CGFloat(gainDB))), \(InspectorValueFormat.decibels().displayString(for: CGFloat(gainDB)))"
+        )
+    }
+}
+
 private enum StudioTimelineMetrics {
     static let rowSpacing: CGFloat = 8
     static let playheadLaneHeight: CGFloat = 14
     static let rulerHeight: CGFloat = 16
     static let clipLaneHeight: CGFloat = 52
     static let zoomLaneHeight: CGFloat = 32
+    static let audioLaneHeight: CGFloat = 42
     /// Room under the lanes for the horizontal scroller, so it never sits on
     /// top of a zoom block.
     static let scrollerGutter: CGFloat = 8
 
-    static let scrollingLanesHeight = clipLaneHeight + zoomLaneHeight
-        + scrollerGutter + rowSpacing * 2
-    static let lanesHeight = playheadLaneHeight + rulerHeight
-        + scrollingLanesHeight + rowSpacing * 2
+    static func scrollingLanesHeight(audioTrackCount: Int) -> CGFloat {
+        clipLaneHeight + zoomLaneHeight
+            + audioLaneHeight * CGFloat(audioTrackCount)
+            + scrollerGutter
+            + rowSpacing * CGFloat(2 + audioTrackCount)
+    }
+
+    static func lanesHeight(audioTrackCount: Int) -> CGFloat {
+        playheadLaneHeight + rulerHeight
+            + scrollingLanesHeight(audioTrackCount: audioTrackCount)
+            + rowSpacing * 2
+    }
 }
 
 /// Shared horizontal scale for every lane in the Studio timeline. `zoom` is a
@@ -2046,6 +2306,115 @@ private struct PlayheadCrownShape: Shape {
     }
 }
 
+/// Invisible continuation of the ruler through the visual gap above the clip.
+/// Keeping it as a real input surface prevents a narrow dead strip exactly
+/// where people naturally aim before dragging into the thumbnails.
+private struct StudioTimelineScrubSurface: View {
+    let duration: TimeInterval
+    let pointsPerSecond: CGFloat
+    let scrollX: CGFloat
+    let onHover: (TimeInterval?) -> Void
+    let onScrub: (TimeInterval) -> Void
+
+    var body: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let location):
+                    onHover(time(atViewportX: location.x))
+                case .ended:
+                    onHover(nil)
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let time = time(atViewportX: value.location.x)
+                        onHover(time)
+                        onScrub(time)
+                    }
+            )
+    }
+
+    private func time(atViewportX x: CGFloat) -> TimeInterval {
+        guard pointsPerSecond > 0 else { return 0 }
+        return min(max(Double((x + scrollX) / pointsPerSecond), 0), duration)
+    }
+}
+
+/// Observes zoom gestures without becoming the hit target. This lets ruler
+/// scrubbing and zoom-cue editing keep their own mouse handling while pinch
+/// and Command-scroll work anywhere in the monitored row.
+private struct StudioTimelineZoomEventMonitor: NSViewRepresentable {
+    let onZoom: (Double, CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ZoomEventView {
+        let view = ZoomEventView()
+        view.onZoom = onZoom
+        return view
+    }
+
+    func updateNSView(_ nsView: ZoomEventView, context: Context) {
+        nsView.onZoom = onZoom
+    }
+
+    final class ZoomEventView: NSView {
+        private static let scrollPointsPerDoubling: CGFloat = 220
+
+        var onZoom: ((Double, CGFloat) -> Void)?
+        private var eventMonitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            removeEventMonitor()
+            guard window != nil else { return }
+
+            eventMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.scrollWheel, .magnify]
+            ) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        deinit {
+            removeEventMonitor()
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard let window, event.window === window else { return event }
+            let point = convert(event.locationInWindow, from: nil)
+            guard bounds.contains(point) else { return event }
+
+            let factor: Double
+            switch event.type {
+            case .magnify:
+                guard event.magnification != 0 else { return event }
+                factor = 1 + Double(event.magnification)
+            case .scrollWheel:
+                guard event.modifierFlags.contains(.command) else { return event }
+                let rawDelta = event.hasPreciseScrollingDeltas
+                    ? event.scrollingDeltaY
+                    : event.scrollingDeltaY * 16
+                guard abs(rawDelta) > 0.001 else { return event }
+                factor = pow(2, Double(rawDelta / Self.scrollPointsPerDoubling))
+            default:
+                return event
+            }
+
+            guard factor.isFinite, factor > 0 else { return event }
+            onZoom?(factor, point.x)
+            return nil
+        }
+
+        private func removeEventMonitor() {
+            guard let eventMonitor else { return }
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
+    }
+}
+
 /// Absolute-time ruler above the clip lane. The ruler itself never scrolls: it
 /// draws only the time span currently on screen, so a deeply zoomed timeline
 /// costs the same to render as a fitted one.
@@ -2228,6 +2597,7 @@ private struct StudioZoomLane: View {
     @Bindable var model: RecordingStudioModel
     let scale: StudioTimelineScale
     let visibleRange: ClosedRange<TimeInterval>
+    let onZoom: (Double, TimeInterval) -> Void
 
     /// Below this many dragged points, a gesture on blank lane space is
     /// still treated as a click-to-seek rather than a zoom-creating drag.
@@ -2310,6 +2680,11 @@ private struct StudioZoomLane: View {
 
             ForEach(visibleBlocks) { block in
                 StudioZoomCueBlock(model: model, block: block, scale: scale)
+            }
+        }
+        .background {
+            StudioTimelineZoomEventMonitor { factor, localX in
+                onZoom(factor, scale.time(forX: localX))
             }
         }
         .contextMenu {
@@ -2654,6 +3029,11 @@ private struct StudioInspector: View {
                 } else if let selectedClip = model.selectedClip {
                     InspectorSection("Selected Clip") {
                         selectedClipControls(for: selectedClip)
+                    }
+                    InspectorSectionDivider()
+                } else if let selectedAudioTrack = model.selectedAudioTrack {
+                    InspectorSection("Selected Audio") {
+                        selectedAudioControls(for: selectedAudioTrack)
                     }
                     InspectorSectionDivider()
                 }
@@ -3123,6 +3503,75 @@ private struct StudioInspector: View {
         }
     }
 
+    // MARK: Selected audio
+
+    private func selectedAudioControls(for track: RecordingAudioTrack) -> some View {
+        let recordedAudioIsActive = model.replacementAudio == nil
+        let gainDB = model.audioGainDB(for: track.kind)
+        return VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
+            if let clip = model.selectedAudioClip {
+                HStack(spacing: 8) {
+                    Text("Clip")
+                    Spacer(minLength: 8)
+                    Text(
+                        "\(studioPreciseTimecode(clip.timelineStart)) – \(studioPreciseTimecode(clip.timelineEnd))"
+                    )
+                    .monospacedDigit()
+                }
+                .font(.inspectorLabel)
+                .foregroundStyle(.secondary)
+
+                Text("Drag the clip to move it. Drag either white edge to trim. Split with T, or delete it to leave silence.")
+                    .font(.inspectorLabel)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                InspectorSectionDivider()
+            }
+
+            InspectorSlider(
+                "Volume",
+                value: Binding(
+                    get: { CGFloat(model.audioGainDB(for: track.kind)) },
+                    set: { model.setAudioGainDB(Double($0), for: track.kind) }
+                ),
+                range: CGFloat(RecordingAudioGainLimits.minimumDB)...CGFloat(RecordingAudioGainLimits.maximumDB),
+                format: .audioVolumePercent()
+            )
+            .disabled(!recordedAudioIsActive)
+
+            HStack(spacing: 8) {
+                Text("100% = original")
+                Spacer(minLength: 8)
+                Text(InspectorValueFormat.decibels().displayString(for: CGFloat(gainDB)))
+                    .monospacedDigit()
+            }
+            .font(.inspectorLabel)
+            .foregroundStyle(.secondary)
+
+            HStack(spacing: 6) {
+                inspectorAction("Auto Adjust", systemImage: "wand.and.sparkles") {
+                    model.autoAdjustVolume(for: track.kind)
+                }
+                .disabled(!recordedAudioIsActive || track.waveform == nil)
+
+                inspectorAction("Reset", systemImage: "arrow.counterclockwise") {
+                    model.resetAudioGain(for: track.kind)
+                }
+                .disabled(!recordedAudioIsActive || model.audioGainDB(for: track.kind) == 0)
+            }
+
+            Text(
+                recordedAudioIsActive
+                    ? "Auto Adjust sets one level for the whole track. It ignores silence and does not duck other audio."
+                    : "The replacement soundtrack is active, so recorded-track volume is bypassed."
+            )
+            .font(.inspectorLabel)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     // MARK: Cursor
 
     private var cursorControls: some View {
@@ -3411,6 +3860,14 @@ private struct StudioInspector: View {
     /// the explaining is left to tooltips.
     private var audioControls: some View {
         VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
+            if model.recordedAudioTracks.count > 1 {
+                inspectorAction("Auto Balance Tracks", systemImage: "slider.horizontal.3") {
+                    model.autoBalanceRecordedAudio()
+                }
+                .disabled(!model.canAutoBalanceRecordedAudio)
+                .help("Set one static level for each recorded track; does not duck system audio")
+            }
+
             // A silent recording has nothing to send out, but it can still
             // be given a soundtrack - so only the export half is withheld.
             if model.hasAudio {
@@ -3445,6 +3902,13 @@ private struct StudioInspector: View {
             }
 
             if let message = model.replacementAudioError {
+                Text(message)
+                    .font(.inspectorLabel)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let message = model.audioAnalysisError {
                 Text(message)
                     .font(.inspectorLabel)
                     .foregroundStyle(.orange)

@@ -56,6 +56,13 @@ enum RecordingStudioShareState: Equatable {
 @MainActor
 @Observable
 final class RecordingStudioModel {
+    private struct AudioClipEditState: Equatable {
+        var tracks: [RecordingAudioTrackEdit]
+        var customizedKinds: Set<RecordingAudioTrackKind>
+        var selectedTrackKind: RecordingAudioTrackKind?
+        var selectedClipID: UUID?
+    }
+
     let sessionURL: URL
     private(set) var session: RecordingSession?
     private(set) var manifest: CaptureManifest?
@@ -166,6 +173,13 @@ final class RecordingStudioModel {
     var selectedCueID: UUID?
     private(set) var clipTimeline = RecordingClipTimeline(segments: [])
     var selectedClipID: UUID?
+    private(set) var recordedAudioTracks: [RecordingAudioTrack] = []
+    var selectedAudioTrackKind: RecordingAudioTrackKind?
+    private(set) var audioTrackEdits: [RecordingAudioTrackEdit] = []
+    var selectedAudioClipID: UUID?
+    private(set) var systemAudioGainDB: Double = 0
+    private(set) var microphoneAudioGainDB: Double = 0
+    private(set) var audioAnalysisError: String?
     var timelineHoverTime: TimeInterval?
     /// Storyboard tiles for the clip lane, sampled on demand at whatever
     /// density the lane's current zoom needs.
@@ -205,6 +219,7 @@ final class RecordingStudioModel {
     private var exportTask: Task<Void, Never>?
     private var audioExportTask: Task<Void, Never>?
     private var replacementAudioTask: Task<Void, Never>?
+    private var audioAnalysisTask: Task<Void, Never>?
     /// The screen movie's video track, kept from load so the player item
     /// can be rebuilt synchronously when an imported soundtrack means the
     /// composition has to be assembled track by track.
@@ -216,6 +231,8 @@ final class RecordingStudioModel {
     private let editUndoManager = UndoManager()
     private(set) var undoRevision = 0
     private var zoomEditSnapshot: [ZoomCue]?
+    private var customizedAudioTrackKinds: Set<RecordingAudioTrackKind> = []
+    private var audioClipEditSnapshot: AudioClipEditState?
     /// The document as of the last explicit save. Everything the user does
     /// after that lives in memory and in the autosaved draft until they save
     /// again, which is what makes the close prompt meaningful.
@@ -280,6 +297,16 @@ final class RecordingStudioModel {
         } catch {
             loadError = "Could not open the recording: \(error.localizedDescription)"
             return
+        }
+        if hasRecordedAudio {
+            do {
+                recordedAudioTracks = try await RecordingAudioWaveformAnalyzer.descriptors(
+                    url: screenURL,
+                    manifest: manifest
+                )
+            } catch {
+                audioAnalysisError = error.localizedDescription
+            }
         }
         trimPreviewPlayer.replaceCurrentItem(with: AVPlayerItem(asset: asset))
         trimPreviewPlayer.actionAtItemEnd = .pause
@@ -358,6 +385,7 @@ final class RecordingStudioModel {
         }
         duration = clipTimeline.duration
         selectedClipID = clipTimeline.segments.first?.id
+        configureAudioTrackEdits(from: document?.audioTrackEdits)
 
         // Resolve the imported soundtrack before the first player item is
         // built, so the editor opens already playing what it will export.
@@ -383,6 +411,7 @@ final class RecordingStudioModel {
         isLoaded = true
         rebuildPreviewReframe()
         loadTimelineThumbnails()
+        analyzeRecordedAudio()
 
         if let session {
             if session.hasUnsavedDraft {
@@ -431,6 +460,8 @@ final class RecordingStudioModel {
         exportAspectMode = document.exportAspectContentMode
         videoCropRect = document.normalizedVideoCropRect
         audioExportFormat = document.audioExportFormatValue
+        systemAudioGainDB = Self.clampedAudioGain(document.systemAudioGainDB ?? 0)
+        microphoneAudioGainDB = Self.clampedAudioGain(document.microphoneAudioGainDB ?? 0)
     }
 
     func teardown() {
@@ -438,6 +469,7 @@ final class RecordingStudioModel {
         exportTask?.cancel()
         audioExportTask?.cancel()
         replacementAudioTask?.cancel()
+        audioAnalysisTask?.cancel()
         shareTask?.cancel()
         transcriptionTask?.cancel()
         projectSaveTask?.cancel()
@@ -632,6 +664,23 @@ final class RecordingStudioModel {
         return clipTimeline.segments.first { $0.id == selectedClipID }
     }
 
+    var selectedAudioTrack: RecordingAudioTrack? {
+        guard let selectedAudioTrackKind else { return nil }
+        return recordedAudioTracks.first { $0.kind == selectedAudioTrackKind }
+    }
+
+    var selectedAudioClip: RecordingAudioClipSegment? {
+        guard let selectedAudioTrackKind, let selectedAudioClipID else { return nil }
+        return audioTrackEdits.first { $0.kind == selectedAudioTrackKind }?
+            .clip(id: selectedAudioClipID)
+    }
+
+    var canAutoBalanceRecordedAudio: Bool {
+        replacementAudio == nil
+            && recordedAudioTracks.count > 1
+            && recordedAudioTracks.allSatisfy { $0.waveform != nil }
+    }
+
     var hasClipEdits: Bool {
         !clipTimeline.isUnedited(sourceDuration: sourceDuration)
     }
@@ -644,12 +693,322 @@ final class RecordingStudioModel {
         guard clipTimeline.segments.contains(where: { $0.id == id }) else { return }
         selectedClipID = id
         selectedCueID = nil
+        selectedAudioTrackKind = nil
+        selectedAudioClipID = nil
     }
 
     func selectZoomCue(id: UUID) {
         guard zoomCues.contains(where: { $0.id == id }) else { return }
         selectedCueID = id
         selectedClipID = nil
+        selectedAudioTrackKind = nil
+        selectedAudioClipID = nil
+    }
+
+    func selectAudioTrack(_ kind: RecordingAudioTrackKind) {
+        guard recordedAudioTracks.contains(where: { $0.kind == kind }) else { return }
+        selectedAudioTrackKind = kind
+        selectedAudioClipID = nil
+        selectedClipID = nil
+        selectedCueID = nil
+    }
+
+    func selectAudioClip(_ id: UUID, in kind: RecordingAudioTrackKind) {
+        guard audioTrackEdits.first(where: { $0.kind == kind })?.clip(id: id) != nil else { return }
+        selectedAudioTrackKind = kind
+        selectedAudioClipID = id
+        selectedClipID = nil
+        selectedCueID = nil
+    }
+
+    func splitSelectedAudioClip(at timelineTime: TimeInterval) {
+        guard let kind = selectedAudioTrackKind,
+              let selectedAudioClipID,
+              let trackIndex = audioTrackEdits.firstIndex(where: { $0.kind == kind }),
+              let nextTrack = audioTrackEdits[trackIndex].split(
+                  clipID: selectedAudioClipID,
+                  at: timelineTime
+              ) else {
+            return
+        }
+
+        let previous = audioClipEditState
+        audioTrackEdits[trackIndex] = nextTrack
+        customizedAudioTrackKinds.insert(kind)
+        self.selectedAudioClipID = nextTrack.clips.first {
+            abs($0.timelineStart - timelineTime) < 0.000_1
+        }?.id ?? selectedAudioClipID
+        finishAudioClipEdit(from: previous, actionName: "Split Audio Clip")
+    }
+
+    func deleteSelectedAudioClip() {
+        guard let kind = selectedAudioTrackKind,
+              let selectedAudioClipID,
+              let trackIndex = audioTrackEdits.firstIndex(where: { $0.kind == kind }),
+              let nextTrack = audioTrackEdits[trackIndex].deleting(clipID: selectedAudioClipID) else {
+            return
+        }
+
+        let previous = audioClipEditState
+        audioTrackEdits[trackIndex] = nextTrack
+        customizedAudioTrackKinds.insert(kind)
+        self.selectedAudioClipID = nextTrack.clips.first {
+            $0.timelineStart >= currentTime
+        }?.id ?? nextTrack.clips.last?.id
+        finishAudioClipEdit(from: previous, actionName: "Delete Audio Clip")
+    }
+
+    func beginAudioClipEdit() {
+        guard audioClipEditSnapshot == nil, selectedAudioClip != nil else { return }
+        pause()
+        audioClipEditSnapshot = audioClipEditState
+    }
+
+    func moveSelectedAudioClip(
+        to requestedStart: TimeInterval,
+        snapThreshold: TimeInterval
+    ) {
+        guard let snapshot = audioClipEditSnapshot,
+              let kind = snapshot.selectedTrackKind,
+              let clipID = snapshot.selectedClipID,
+              let originalTrack = snapshot.tracks.first(where: { $0.kind == kind }),
+              var clip = originalTrack.clip(id: clipID),
+              let trackIndex = audioTrackEdits.firstIndex(where: { $0.kind == kind }) else {
+            return
+        }
+
+        let originalDuration = clip.timelineDuration
+        let neighbors = originalTrack.clips
+            .filter { $0.id != clipID }
+            .sorted { $0.timelineStart < $1.timelineStart }
+        let previousEnd = neighbors.last { $0.timelineEnd <= clip.timelineStart }?.timelineEnd ?? 0
+        let nextStart = neighbors.first { $0.timelineStart >= clip.timelineEnd }?.timelineStart ?? duration
+
+        let upper = max(previousEnd, nextStart - originalDuration)
+        var start = min(max(requestedStart, previousEnd), upper)
+        start = snappedAudioTime(
+            start,
+            movingDuration: originalDuration,
+            neighbors: neighbors,
+            threshold: snapThreshold
+        )
+        clip.timelineStart = min(max(start, previousEnd), upper)
+
+        guard clip.timelineDuration >= RecordingAudioClipSegment.minimumDuration else { return }
+        audioTrackEdits[trackIndex] = originalTrack.replacing(clip)
+        customizedAudioTrackKinds.insert(kind)
+    }
+
+    func trimSelectedAudioClipLeadingEdge(
+        to requestedStart: TimeInterval,
+        snapThreshold: TimeInterval
+    ) {
+        guard let snapshot = audioClipEditSnapshot,
+              let kind = snapshot.selectedTrackKind,
+              let clipID = snapshot.selectedClipID,
+              let originalTrack = snapshot.tracks.first(where: { $0.kind == kind }),
+              var clip = originalTrack.clip(id: clipID),
+              let trackIndex = audioTrackEdits.firstIndex(where: { $0.kind == kind }) else {
+            return
+        }
+
+        let neighbors = originalTrack.clips.filter { $0.id != clipID }
+        let previousEnd = neighbors.filter { $0.timelineEnd <= clip.timelineStart }
+            .map(\.timelineEnd).max() ?? 0
+        let sourceLowerBound = clip.timelineStart - clip.sourceStart / clip.speed
+        let latestStart = clip.timelineEnd - RecordingAudioClipSegment.minimumDuration
+        var start = snappedAudioEdge(
+            requestedStart,
+            neighbors: neighbors,
+            threshold: snapThreshold
+        )
+        start = min(max(start, previousEnd, sourceLowerBound), latestStart)
+        clip.sourceStart += (start - clip.timelineStart) * clip.speed
+        clip.timelineStart = start
+        audioTrackEdits[trackIndex] = originalTrack.replacing(clip)
+        customizedAudioTrackKinds.insert(kind)
+    }
+
+    func trimSelectedAudioClipTrailingEdge(
+        to requestedEnd: TimeInterval,
+        snapThreshold: TimeInterval
+    ) {
+        guard let snapshot = audioClipEditSnapshot,
+              let kind = snapshot.selectedTrackKind,
+              let clipID = snapshot.selectedClipID,
+              let originalTrack = snapshot.tracks.first(where: { $0.kind == kind }),
+              var clip = originalTrack.clip(id: clipID),
+              let trackIndex = audioTrackEdits.firstIndex(where: { $0.kind == kind }) else {
+            return
+        }
+
+        let neighbors = originalTrack.clips.filter { $0.id != clipID }
+        let nextStart = neighbors.filter { $0.timelineStart >= clip.timelineEnd }
+            .map(\.timelineStart).min() ?? duration
+        let sourceUpperBound = clip.timelineEnd
+            + (sourceDuration - clip.sourceEnd) / clip.speed
+        let earliestEnd = clip.timelineStart + RecordingAudioClipSegment.minimumDuration
+        var end = snappedAudioEdge(
+            requestedEnd,
+            neighbors: neighbors,
+            threshold: snapThreshold
+        )
+        end = min(max(end, earliestEnd), nextStart, duration, sourceUpperBound)
+        clip.sourceEnd += (end - clip.timelineEnd) * clip.speed
+        clip.sourceEnd = min(max(clip.sourceEnd, clip.sourceStart), sourceDuration)
+        audioTrackEdits[trackIndex] = originalTrack.replacing(clip)
+        customizedAudioTrackKinds.insert(kind)
+    }
+
+    func endAudioClipEdit(actionName: String) {
+        guard let previous = audioClipEditSnapshot else { return }
+        audioClipEditSnapshot = nil
+        guard previous != audioClipEditState else { return }
+        finishAudioClipEdit(from: previous, actionName: actionName)
+    }
+
+    private func snappedAudioTime(
+        _ start: TimeInterval,
+        movingDuration: TimeInterval,
+        neighbors: [RecordingAudioClipSegment],
+        threshold: TimeInterval
+    ) -> TimeInterval {
+        let anchors = audioSnapAnchors(neighbors: neighbors)
+        let candidates = anchors + anchors.map { $0 - movingDuration }
+        return nearestAudioSnap(to: start, candidates: candidates, threshold: threshold)
+    }
+
+    private func snappedAudioEdge(
+        _ time: TimeInterval,
+        neighbors: [RecordingAudioClipSegment],
+        threshold: TimeInterval
+    ) -> TimeInterval {
+        nearestAudioSnap(
+            to: time,
+            candidates: audioSnapAnchors(neighbors: neighbors),
+            threshold: threshold
+        )
+    }
+
+    private func audioSnapAnchors(
+        neighbors: [RecordingAudioClipSegment]
+    ) -> [TimeInterval] {
+        var anchors = [0, duration, currentTime]
+        var cutTime: TimeInterval = 0
+        for clip in clipTimeline.segments.dropLast() {
+            cutTime += clip.editorDuration
+            anchors.append(cutTime)
+        }
+        for neighbor in neighbors {
+            anchors.append(neighbor.timelineStart)
+            anchors.append(neighbor.timelineEnd)
+        }
+        return anchors
+    }
+
+    private func nearestAudioSnap(
+        to value: TimeInterval,
+        candidates: [TimeInterval],
+        threshold: TimeInterval
+    ) -> TimeInterval {
+        guard threshold > 0,
+              let nearest = candidates.min(by: { abs($0 - value) < abs($1 - value) }),
+              abs(nearest - value) <= threshold else {
+            return value
+        }
+        return nearest
+    }
+
+    private var audioClipEditState: AudioClipEditState {
+        AudioClipEditState(
+            tracks: audioTrackEdits,
+            customizedKinds: customizedAudioTrackKinds,
+            selectedTrackKind: selectedAudioTrackKind,
+            selectedClipID: selectedAudioClipID
+        )
+    }
+
+    private func finishAudioClipEdit(
+        from previous: AudioClipEditState,
+        actionName: String
+    ) {
+        guard previous != audioClipEditState else { return }
+        registerUndo(actionName) { target in
+            target.restoreAudioClipEdit(previous, actionName: actionName)
+        }
+        rebuildAfterAudioClipEdit()
+    }
+
+    private func restoreAudioClipEdit(
+        _ state: AudioClipEditState,
+        actionName: String
+    ) {
+        let previous = audioClipEditState
+        audioTrackEdits = state.tracks
+        customizedAudioTrackKinds = state.customizedKinds
+        selectedAudioTrackKind = state.selectedTrackKind
+        selectedAudioClipID = state.selectedClipID
+        registerUndo(actionName) { target in
+            target.restoreAudioClipEdit(previous, actionName: actionName)
+        }
+        rebuildAfterAudioClipEdit()
+    }
+
+    private func rebuildAfterAudioClipEdit() {
+        pause()
+        do {
+            try rebuildScreenPlayerItem(preserving: currentTime)
+        } catch {
+            loadError = "Could not update the audio timeline: \(error.localizedDescription)"
+        }
+        scheduleProjectSave()
+    }
+
+    func audioGainDB(for kind: RecordingAudioTrackKind) -> Double {
+        switch kind {
+        case .system: systemAudioGainDB
+        case .microphone: microphoneAudioGainDB
+        }
+    }
+
+    func setAudioGainDB(_ gainDB: Double, for kind: RecordingAudioTrackKind) {
+        let gainDB = Self.clampedAudioGain(gainDB)
+        switch kind {
+        case .system:
+            guard abs(systemAudioGainDB - gainDB) > 0.000_1 else { return }
+            systemAudioGainDB = gainDB
+        case .microphone:
+            guard abs(microphoneAudioGainDB - gainDB) > 0.000_1 else { return }
+            microphoneAudioGainDB = gainDB
+        }
+        applyRecordedAudioMix()
+        scheduleProjectSave()
+    }
+
+    func autoAdjustVolume(for kind: RecordingAudioTrackKind) {
+        guard replacementAudio == nil,
+              let gainDB = recordedAudioTracks.first(where: { $0.kind == kind })?
+                .waveform?.suggestedGainDB else {
+            return
+        }
+        setAudioGainDB(gainDB, for: kind)
+    }
+
+    func autoBalanceRecordedAudio() {
+        guard canAutoBalanceRecordedAudio else { return }
+        for track in recordedAudioTracks {
+            guard let gainDB = track.waveform?.suggestedGainDB else { continue }
+            switch track.kind {
+            case .system: systemAudioGainDB = Self.clampedAudioGain(gainDB)
+            case .microphone: microphoneAudioGainDB = Self.clampedAudioGain(gainDB)
+            }
+        }
+        applyRecordedAudioMix()
+        scheduleProjectSave()
+    }
+
+    func resetAudioGain(for kind: RecordingAudioTrackKind) {
+        setAudioGainDB(0, for: kind)
     }
 
     func undo() {
@@ -764,6 +1123,7 @@ final class RecordingStudioModel {
         timelineHoverTime = nil
         clipTimeline = next
         duration = next.duration
+        refreshUncustomizedAudioTrackEdits()
         selectedClipID = selectedID.flatMap { id in
             next.segments.contains(where: { $0.id == id }) ? id : nil
         } ?? next.segments.first?.id
@@ -799,11 +1159,15 @@ final class RecordingStudioModel {
             playbackAsset = try RecordingCompositionBuilder.makeAsset(
                 from: screenAsset,
                 timeline: clipTimeline,
-                sourceDuration: sourceDuration
+                sourceDuration: sourceDuration,
+                audioTrackEdits: audioTrackEdits,
+                audioTrackKinds: recordedAudioTrackKindsInSourceOrder
             )
         }
 
-        screenPlayer.replaceCurrentItem(with: AVPlayerItem(asset: playbackAsset))
+        let playerItem = AVPlayerItem(asset: playbackAsset)
+        applyRecordedAudioMix(to: playerItem)
+        screenPlayer.replaceCurrentItem(with: playerItem)
         screenPlayer.actionAtItemEnd = .pause
         currentTime = min(max(editorTime, 0), duration)
         movePlayers(to: currentTime)
@@ -825,6 +1189,149 @@ final class RecordingStudioModel {
 
     private func loadTimelineThumbnails() {
         timelineThumbnails.prepare(url: screenURL, duration: sourceDuration)
+    }
+
+    private func analyzeRecordedAudio() {
+        audioAnalysisTask?.cancel()
+        guard hasRecordedAudio else {
+            recordedAudioTracks = []
+            return
+        }
+
+        let url = screenURL
+        let captureManifest = manifest
+        audioAnalysisError = nil
+        audioAnalysisTask = Task { [weak self] in
+            do {
+                let descriptors = try await RecordingAudioWaveformAnalyzer.descriptors(
+                    url: url,
+                    manifest: captureManifest
+                )
+                try Task.checkCancellation()
+                self?.recordedAudioTracks = descriptors
+                self?.applyRecordedAudioMix()
+
+                let tracks = try await RecordingAudioWaveformAnalyzer.analyze(
+                    url: url,
+                    manifest: captureManifest
+                )
+                try Task.checkCancellation()
+                guard let self else { return }
+                self.recordedAudioTracks = tracks
+                self.applyRecordedAudioMix()
+            } catch is CancellationError {
+                // Closing Studio or opening another project normally cancels analysis.
+            } catch {
+                self?.audioAnalysisError = error.localizedDescription
+            }
+        }
+    }
+
+    private func applyRecordedAudioMix() {
+        guard let item = screenPlayer.currentItem else { return }
+        applyRecordedAudioMix(to: item)
+    }
+
+    private func applyRecordedAudioMix(to item: AVPlayerItem) {
+        guard replacementAudio == nil else {
+            item.audioMix = nil
+            return
+        }
+        let tracks = item.asset.tracks(withMediaType: .audio)
+        item.audioMix = RecordingAudioGainMix.make(
+            tracks: tracks,
+            gainsDB: recordedAudioGains(forTrackCount: tracks.count),
+            trackEdits: audioTrackEdits
+        )
+    }
+
+    private func recordedAudioGains(forTrackCount trackCount: Int) -> [Double] {
+        let analyzed = recordedAudioTracks.sorted { $0.sourceIndex < $1.sourceIndex }
+        if analyzed.count == trackCount {
+            return analyzed.map { effectiveAudioGainDB(for: $0.kind) }
+        }
+        if trackCount == 1 {
+            if manifest?.includesMicrophone == true, manifest?.includesSystemAudio != true {
+                return [effectiveAudioGainDB(for: .microphone)]
+            }
+            return [effectiveAudioGainDB(for: .system)]
+        }
+        return [
+            effectiveAudioGainDB(for: .system),
+            effectiveAudioGainDB(for: .microphone)
+        ]
+    }
+
+    private func effectiveAudioGainDB(for kind: RecordingAudioTrackKind) -> Double {
+        if audioTrackEdits.first(where: { $0.kind == kind })?.clips.isEmpty == true {
+            return -.infinity
+        }
+        return audioGainDB(for: kind)
+    }
+
+    private var expectedRecordedAudioTrackCount: Int {
+        if !recordedAudioTracks.isEmpty { return recordedAudioTracks.count }
+        if manifest?.includesSystemAudio == true, manifest?.includesMicrophone == true { return 2 }
+        return hasRecordedAudio ? 1 : 0
+    }
+
+    private var recordedAudioTrackKindsInSourceOrder: [RecordingAudioTrackKind] {
+        if !recordedAudioTracks.isEmpty {
+            return recordedAudioTracks.sorted { $0.sourceIndex < $1.sourceIndex }.map(\.kind)
+        }
+        if manifest?.includesMicrophone == true, manifest?.includesSystemAudio != true {
+            return [.microphone]
+        }
+        if expectedRecordedAudioTrackCount > 1 {
+            return [.system, .microphone]
+        }
+        return hasRecordedAudio ? [.system] : []
+    }
+
+    private var persistedAudioTrackEdits: [RecordingAudioTrackEdit]? {
+        let edits: [RecordingAudioTrackEdit] = recordedAudioTrackKindsInSourceOrder.compactMap { kind in
+            guard customizedAudioTrackKinds.contains(kind) else { return nil }
+            return audioTrackEdits.first { $0.kind == kind }
+        }
+        return edits.isEmpty ? nil : edits
+    }
+
+    private func configureAudioTrackEdits(from storedEdits: [RecordingAudioTrackEdit]?) {
+        let storedByKind = Dictionary(
+            uniqueKeysWithValues: (storedEdits ?? []).map { ($0.kind, $0) }
+        )
+        customizedAudioTrackKinds = Set(storedByKind.keys)
+        audioTrackEdits = recordedAudioTrackKindsInSourceOrder.map { kind in
+            let edit = storedByKind[kind]
+                ?? RecordingAudioTrackEdit.followingVideo(kind: kind, timeline: clipTimeline)
+            return edit.normalized(
+                sourceDuration: sourceDuration,
+                timelineDuration: duration
+            )
+        }
+    }
+
+    private func refreshUncustomizedAudioTrackEdits() {
+        let existingByKind = Dictionary(
+            uniqueKeysWithValues: audioTrackEdits.map { ($0.kind, $0) }
+        )
+        audioTrackEdits = recordedAudioTrackKindsInSourceOrder.map { kind in
+            if customizedAudioTrackKinds.contains(kind), let existing = existingByKind[kind] {
+                return existing
+            }
+            return RecordingAudioTrackEdit.followingVideo(kind: kind, timeline: clipTimeline)
+        }
+        if let selectedAudioClipID,
+           !audioTrackEdits.contains(where: { $0.clip(id: selectedAudioClipID) != nil }) {
+            self.selectedAudioClipID = nil
+        }
+    }
+
+    private static func clampedAudioGain(_ gainDB: Double) -> Double {
+        min(
+            max(gainDB.isFinite ? gainDB : 0, RecordingAudioGainLimits.minimumDB),
+            RecordingAudioGainLimits.maximumDB
+        )
     }
 
     /// Speed of whichever clip covers this editor time; 1 when nothing
@@ -1148,7 +1655,10 @@ final class RecordingStudioModel {
             videoCropRect: isVideoCropped ? videoCropRect : nil,
             replacementAudioFileName: replacementAudio?.url.lastPathComponent,
             replacementAudioDisplayName: replacementAudio?.displayName,
-            audioExportFormat: audioExportFormat
+            audioExportFormat: audioExportFormat,
+            systemAudioGainDB: systemAudioGainDB,
+            microphoneAudioGainDB: microphoneAudioGainDB,
+            audioTrackEdits: persistedAudioTrackEdits
         )
     }
 
@@ -1260,6 +1770,8 @@ final class RecordingStudioModel {
         }
         duration = clipTimeline.duration
         selectedClipID = clipTimeline.segments.first?.id
+        selectedAudioClipID = nil
+        configureAudioTrackEdits(from: document.audioTrackEdits)
 
         if let fileName = document.replacementAudioFileName {
             let url = session.directoryURL.appendingPathComponent(fileName)
@@ -1758,6 +2270,9 @@ final class RecordingStudioModel {
             clipTimeline: clipTimeline,
             exportSettings: exportSettings,
             audioReplacementURL: replacementAudio?.url,
+            recordedAudioGainsDB: recordedAudioGains(forTrackCount: expectedRecordedAudioTrackCount),
+            audioTrackEdits: audioTrackEdits,
+            audioTrackKinds: recordedAudioTrackKindsInSourceOrder,
             reframe: reframe,
             fitContentAspect: fitContentAspect
         )
@@ -1982,6 +2497,9 @@ final class RecordingStudioModel {
             screenURL: screenURL,
             clipTimeline: clipTimeline,
             replacementURL: replacementAudio?.url,
+            recordedAudioGainsDB: recordedAudioGains(forTrackCount: expectedRecordedAudioTrackCount),
+            audioTrackEdits: audioTrackEdits,
+            audioTrackKinds: recordedAudioTrackKindsInSourceOrder,
             format: audioExportFormat
         )
         let suggestedFileName = audioExportSuggestedFileName
