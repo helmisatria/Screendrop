@@ -132,11 +132,12 @@ enum RecordingSessionRenderer {
         let storedAudioEdits = Dictionary(
             uniqueKeysWithValues: (document?.audioTrackEdits ?? []).map { ($0.kind, $0) }
         )
-        let audioTrackEdits = audioKinds.map { kind in
+        let skipEdit = RecordingSkippedClips(playable: clipTimeline, skipped: document?.skippedClips ?? [])
+        let audioTrackEdits = skipEdit.outputAudio(audioKinds.map { kind in
             (storedAudioEdits[kind]
-                ?? RecordingAudioTrackEdit.followingVideo(kind: kind, timeline: clipTimeline))
-                .normalized(sourceDuration: duration, timelineDuration: clipTimeline.duration)
-        }
+                ?? RecordingAudioTrackEdit.followingVideo(kind: kind, timeline: skipEdit.display))
+                .normalized(sourceDuration: duration, timelineDuration: skipEdit.display.duration)
+        })
         let recordedAudioGains = audioKinds.map { kind in
             switch kind {
             case .system: document?.systemAudioGainDB ?? 0
@@ -174,6 +175,10 @@ enum RecordingSessionRenderer {
             clipTimeline: clipTimeline,
             exportSettings: document?.exportSettings ?? VideoCompressionSettings(),
             audioReplacementURL: replacementURL,
+            replacementSlices: replacementURL == nil ? nil : RecordingReplacementAudioSlice.make(
+                basis: RecordingClipTimeline(segments: document?.replacementAudioBasis ?? skipEdit.display.segments),
+                output: clipTimeline
+            ),
             recordedAudioGainsDB: recordedAudioGains,
             audioTrackEdits: audioTrackEdits,
             audioTrackKinds: audioKinds,

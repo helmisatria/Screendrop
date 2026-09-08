@@ -22,13 +22,15 @@ struct RecordingCameraBubbleSettings: Equatable {
 }
 
 struct RecordingEditDocument: Codable, Equatable {
-    var formatVersion = 7
+    var formatVersion = 8
     var style: StoredRecordingStudioStyle
     var zoomEnabled: Bool
     var zoomCues: [ZoomCue]
     /// Ordered source ranges that make up the edited movie. Optional so v1
     /// projects continue to decode through their single trim range.
     var clips: [RecordingClipSegment]?
+    var skippedClips: [RecordingClipSegment]?
+    var replacementAudioBasis: [RecordingClipSegment]?
     var trimStart: TimeInterval?
     var trimEnd: TimeInterval?
     var exportSettings: VideoCompressionSettings?
@@ -75,6 +77,8 @@ struct RecordingEditDocument: Codable, Equatable {
         case zoomEnabled
         case zoomCues
         case clips
+        case replacementAudioBasis
+        case skippedClips
         case trimStart
         case trimEnd
         case exportSettings
@@ -106,6 +110,8 @@ struct RecordingEditDocument: Codable, Equatable {
         zoomEnabled: Bool,
         zoomCues: [ZoomCue],
         clipTimeline: RecordingClipTimeline? = nil,
+        skippedClips: [RecordingClipSegment]? = nil,
+        replacementAudioBasis: [RecordingClipSegment]? = nil,
         trimSelection: VideoTrimSelection? = nil,
         exportSettings: VideoCompressionSettings? = nil,
         showsClickEffects: Bool? = nil,
@@ -129,6 +135,8 @@ struct RecordingEditDocument: Codable, Equatable {
         self.zoomEnabled = zoomEnabled
         self.zoomCues = zoomCues
         clips = clipTimeline?.segments
+        self.skippedClips = skippedClips
+        self.replacementAudioBasis = replacementAudioBasis
         if let clip = clipTimeline?.segments.only {
             // Keep the legacy envelope populated for older Screendrop builds.
             trimStart = clip.sourceStart
@@ -200,6 +208,8 @@ struct RecordingEditDocument: Codable, Equatable {
         zoomEnabled = try container.decodeIfPresent(Bool.self, forKey: .zoomEnabled) ?? true
         zoomCues = try container.decodeIfPresent([ZoomCue].self, forKey: .zoomCues) ?? []
         clips = try container.decodeIfPresent([RecordingClipSegment].self, forKey: .clips)
+        skippedClips = try container.decodeIfPresent([RecordingClipSegment].self, forKey: .skippedClips)
+        replacementAudioBasis = try container.decodeIfPresent([RecordingClipSegment].self, forKey: .replacementAudioBasis)
         trimStart = try container.decodeIfPresent(TimeInterval.self, forKey: .trimStart)
         trimEnd = try container.decodeIfPresent(TimeInterval.self, forKey: .trimEnd)
         exportSettings = try container.decodeIfPresent(
@@ -258,6 +268,8 @@ struct RecordingEditDocument: Codable, Equatable {
         try container.encode(zoomEnabled, forKey: .zoomEnabled)
         try container.encode(zoomCues, forKey: .zoomCues)
         try container.encodeIfPresent(clips, forKey: .clips)
+        try container.encodeIfPresent(skippedClips, forKey: .skippedClips)
+        try container.encodeIfPresent(replacementAudioBasis, forKey: .replacementAudioBasis)
         try container.encodeIfPresent(trimStart, forKey: .trimStart)
         try container.encodeIfPresent(trimEnd, forKey: .trimEnd)
         try container.encodeIfPresent(exportSettings, forKey: .exportSettings)

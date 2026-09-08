@@ -162,7 +162,8 @@ nonisolated enum RecordingCompositionBuilder {
         videoTrack: AVAssetTrack,
         timeline: RecordingClipTimeline,
         sourceDuration: TimeInterval,
-        replacementAudio: RecordingReplacementAudio
+        replacementAudio: RecordingReplacementAudio,
+        replacementSlices: [RecordingReplacementAudioSlice]? = nil
     ) throws -> AVAsset {
         let normalized = timeline.normalized(to: sourceDuration)
         let composition = AVMutableComposition()
@@ -189,6 +190,12 @@ nonisolated enum RecordingCompositionBuilder {
             } else {
                 insertionTime = insertionTime + range.duration
             }
+        }
+
+        if let replacementSlices {
+            try RecordingReplacementAudioSlice.insert(track: replacementAudio.track, slices: replacementSlices,
+                                                       duration: normalized.duration, into: composition)
+            return composition
         }
 
         // The import is already the finished cut's soundtrack, so it lies

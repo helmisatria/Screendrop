@@ -890,7 +890,7 @@ private struct StudioSubtitleBarView: View {
             return Text(text).foregroundStyle(.white)
         }
         var combined = Text(verbatim: "")
-        for (index, word) in karaokeLine.words.enumerated() {
+        for index in karaokeLine.words.indices {
             let color: Color
             if index == karaokeLine.activeIndex {
                 color = Color(cgColor: SubtitleBarMetrics.karaokeAccent)
@@ -899,7 +899,7 @@ private struct StudioSubtitleBarView: View {
             } else {
                 color = .white.opacity(SubtitleBarMetrics.karaokeUpcomingAlpha)
             }
-            let piece = Text(verbatim: index > 0 ? " \(word)" : word)
+            let piece = Text(verbatim: karaokeLine.textPiece(at: index))
                 .foregroundStyle(color)
             combined = combined + piece
         }
@@ -916,8 +916,6 @@ private struct StudioSubtitleRow: View {
     let cue: RecordingSubtitleCue
     let isActive: Bool
 
-    @FocusState private var isEditing: Bool
-
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Button {
@@ -931,24 +929,8 @@ private struct StudioSubtitleRow: View {
             .disabled(editorTime == nil)
             .help(editorTime == nil ? "This subtitle's audio was cut out" : "Jump to this subtitle")
 
-            TextField(
-                "Subtitle",
-                text: Binding(
-                    get: { cue.text },
-                    set: { model.updateSubtitleText(id: cue.id, text: $0) }
-                ),
-                axis: .vertical
-            )
-            .textFieldStyle(.plain)
-            .font(.inspectorValue)
-            .focused($isEditing)
-            .onChange(of: isEditing) { _, editing in
-                // Starting to edit parks the paused preview on this cue so
-                // the correction is visible in context while typing.
-                if editing {
-                    model.seekToSubtitle(cue)
-                }
-            }
+            RecordingCaptionTextEditor(model: model, cue: cue)
+                .alignmentGuide(.firstTextBaseline) { _ in 11 }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
@@ -1379,13 +1361,15 @@ private struct StudioTimelineEditor: View {
     }
 
     private var displayTimeline: RecordingClipTimeline {
-        trimDisplayTimeline ?? model.clipTimeline
+        trimDisplayTimeline ?? model.displayClipTimeline
     }
 
     private var displayPlayheadTime: TimeInterval {
-        guard let trimDisplayTimeline else { return model.currentTime }
-        let sourceTime = model.clipTimeline.sourceTime(at: model.currentTime)
-        return trimDisplayTimeline.editorTime(forSourceTime: sourceTime) ?? model.currentTime
+        if model.trimPreviewSourceTime == nil, model.currentTime >= model.duration {
+            return displayTimeline.duration
+        }
+        let sourceTime = model.trimPreviewSourceTime ?? model.clipTimeline.sourceTime(at: model.currentTime)
+        return displayTimeline.editorTime(forSourceTime: sourceTime) ?? model.currentTime
     }
 
     private var displayHoverTime: TimeInterval? {
@@ -1393,14 +1377,29 @@ private struct StudioTimelineEditor: View {
             return rulerHoverDisplayTime
         }
         guard let hoverTime = model.timelineHoverTime else { return nil }
-        guard let trimDisplayTimeline else { return hoverTime }
         let sourceTime = model.clipTimeline.sourceTime(at: hoverTime)
-        return trimDisplayTimeline.editorTime(forSourceTime: sourceTime) ?? hoverTime
+        return displayTimeline.editorTime(forSourceTime: sourceTime) ?? hoverTime
     }
 
     var body: some View {
         VStack(spacing: StudioTimelineMetrics.rowSpacing) {
             transport
+            if !model.skippedClips.isEmpty {
+                HStack {
+                    Text("Original: \(studioPreciseTimecode(model.sourceDuration)) · Output: \(studioPreciseTimecode(model.duration))")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Spacer()
+                    if model.selectedClipIsSkipped {
+                        Button(model.isPreviewingSkippedClip ? "Stop Preview" : "Preview Skipped Section") {
+                            if model.isPreviewingSkippedClip { model.endTrimPreview() }
+                            else { model.previewSelectedSkippedClip() }
+                        }
+                        Button("Restore Clip") { model.deleteSelectedClip() }
+                    }
+                    Text("Delete toggles skip / restore")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             lanes
         }
         .padding(.horizontal, 16)
@@ -1561,7 +1560,7 @@ private struct StudioTimelineEditor: View {
                             selectedClipID: model.selectedAudioTrackKind == track.kind
                                 ? model.selectedAudioClipID
                                 : nil,
-                            timelineDuration: model.duration,
+                            timelineDuration: model.displayClipTimeline.duration,
                             pointsPerSecond: scale.pointsPerSecond,
                             isInactive: model.replacementAudio != nil,
                             onSelectClip: { id in
@@ -1569,7 +1568,7 @@ private struct StudioTimelineEditor: View {
                             },
                             onSeek: { time in
                                 model.pause()
-                                model.seek(to: time)
+                                model.seek(to: model.outputTime(forDisplayTime: time))
                             },
                             onBeginEdit: {
                                 model.beginAudioClipEdit()
@@ -1630,17 +1629,24 @@ private struct StudioTimelineEditor: View {
     private var clipLane: some View {
         RecordingClipTimelineView(
             selectedClipID: $model.selectedClipID,
-            playheadTime: $model.currentTime,
-            timeline: model.clipTimeline,
+            playheadTime: Binding(get: { model.displayTime(forOutputTime: model.currentTime) }, set: { _ in }),
+            timeline: model.displayClipTimeline,
+            skippedClipIDs: model.skippedClipIDs,
             sourceDuration: model.sourceDuration,
             thumbnails: model.timelineThumbnails,
             onSelect: { model.selectClip(id: $0) },
             onSeek: { time in
                 model.pause()
-                model.seek(to: time)
+                model.seek(to: model.outputTime(forDisplayTime: time))
             },
-            onHover: { previewTimeline(atEditorTime: $0) },
-            onSplit: { model.splitClip(at: $0) },
+            onHover: { time in
+                previewTimeline(atEditorTime: time.map { model.outputTime(forDisplayTime: $0) })
+            },
+            onSplit: { time in
+                guard let location = model.displayClipTimeline.location(at: time),
+                      !model.skippedClipIDs.contains(location.segmentID) else { return }
+                model.splitClip(at: model.outputTime(forDisplayTime: time))
+            },
             onDelete: { deleteSelection() },
             onTrim: { model.trimClip($0) },
             onTrimPreview: { sourceTime in
@@ -1733,7 +1739,7 @@ private struct StudioTimelineEditor: View {
         forDisplayTime time: TimeInterval
     ) -> TimelinePosition {
         guard let trimDisplayTimeline else {
-            return TimelinePosition(editorTime: time, displayTime: time)
+            return TimelinePosition(editorTime: model.outputTime(forDisplayTime: time), displayTime: time)
         }
         let displayTime = min(max(time, 0), trimDisplayTimeline.duration)
         guard let displayLocation = trimDisplayTimeline.location(at: displayTime) else {
@@ -1752,6 +1758,11 @@ private struct StudioTimelineEditor: View {
         guard let keptClip = model.clipTimeline.segments.first(where: {
             $0.id == displayLocation.segmentID
         }), let keptRange = model.clipTimeline.editorRange(for: keptClip.id) else {
+            if model.skippedClipIDs.contains(displayLocation.segmentID) {
+                let next = model.clipTimeline.segments.first { $0.sourceStart >= displayLocation.sourceTime }
+                let outputTime = next.flatMap { model.clipTimeline.editorRange(for: $0.id)?.lowerBound } ?? model.duration
+                return TimelinePosition(editorTime: outputTime, displayTime: displayTime)
+            }
             let firstSourceStart = model.clipTimeline.segments.first?.sourceStart ?? 0
             if displayLocation.sourceTime <= firstSourceStart {
                 return TimelinePosition(editorTime: 0, displayTime: 0)
@@ -1842,14 +1853,15 @@ private struct StudioTimelineEditor: View {
 
             timelineButton("Split at Playhead", systemImage: "scissors") {
                 if model.selectedAudioClipID != nil {
-                    model.splitSelectedAudioClip(at: model.currentTime)
+                    model.splitSelectedAudioClip(at: model.displayTime(forOutputTime: model.currentTime))
                 } else {
                     model.splitClip(at: model.currentTime)
                 }
                 }
                 .keyboardShortcut("t", modifiers: [])
+                .disabled(model.selectedClipIsSkipped)
 
-                timelineButton("Delete Selection", systemImage: "trash") {
+                timelineButton(model.selectedClipIsSkipped ? "Restore Clip" : "Skip Clip / Delete Selection", systemImage: model.selectedClipIsSkipped ? "arrow.uturn.backward" : "trash") {
                     deleteSelection()
                 }
                 .disabled(!canDeleteSelection)
@@ -2632,7 +2644,7 @@ private struct StudioZoomLane: View {
                                    < Self.dragCreateThreshold {
                                 // Still within click tolerance: scrub the
                                 // playhead, same as a plain click always has.
-                                model.seek(to: time)
+                                model.seek(to: model.outputTime(forDisplayTime: time))
                                 return
                             }
 
@@ -2645,8 +2657,8 @@ private struct StudioZoomLane: View {
                             if let range = pendingZoomRange,
                                range.upperBound - range.lowerBound > 0.001 {
                                 model.addZoomCue(
-                                    fromEditorTime: range.lowerBound,
-                                    toEditorTime: range.upperBound
+                                    fromEditorTime: model.outputTime(forDisplayTime: range.lowerBound),
+                                    toEditorTime: model.outputTime(forDisplayTime: range.upperBound)
                                 )
                             }
                             dragStartTime = nil
@@ -2709,7 +2721,7 @@ private struct StudioZoomLane: View {
         let upperLimit = blocks
             .filter { $0.editorStart >= startTime }
             .map(\.editorStart)
-            .min() ?? model.duration
+            .min() ?? model.displayClipTimeline.duration
         let low = max(min(startTime, currentTime), lowerLimit)
         let high = min(max(startTime, currentTime), upperLimit)
         return low...max(low, high)
@@ -2824,10 +2836,10 @@ private struct StudioZoomCueBlock: View {
                         let baseBlockDuration = dragBase.editorEnd - dragBase.editorStart
                         let editorStart = min(
                             max(0, dragBase.editorStart + delta),
-                            max(0, model.duration - baseBlockDuration)
+                            max(0, model.displayClipTimeline.duration - baseBlockDuration)
                         )
                         moved.start = min(
-                            max(0, model.sourceTime(atEditorTime: editorStart)),
+                            max(0, model.displayClipTimeline.sourceTime(at: editorStart)),
                             max(0, model.sourceDuration - length)
                         )
                         moved.end = min(model.sourceDuration, moved.start + length)
@@ -2879,14 +2891,14 @@ private struct StudioZoomCueBlock: View {
                         switch edge {
                         case .leading:
                             let editorTime = dragBase.editorStart + delta
-                            let sourceTime = model.sourceTime(atEditorTime: editorTime)
+                            let sourceTime = model.displayClipTimeline.sourceTime(at: editorTime)
                             resized.start = min(
                                 max(0, sourceTime),
                                 dragBase.cue.end - ZoomCue.minimumDuration
                             )
                         case .trailing:
                             let editorTime = dragBase.editorEnd + delta
-                            let sourceTime = model.sourceTime(atEditorTime: editorTime)
+                            let sourceTime = model.displayClipTimeline.sourceTime(at: editorTime)
                             resized.end = max(
                                 dragBase.cue.start + ZoomCue.minimumDuration,
                                 min(model.sourceDuration, sourceTime)
@@ -3638,15 +3650,32 @@ private struct StudioInspector: View {
     @ViewBuilder
     private var transcriptionControls: some View {
         VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
+            DisclosureGroup {
+                TranscriptionSettingsControls()
+                    .padding(.vertical, InspectorMetrics.rowSpacing)
+            } label: {
+                Text("Provider & Model")
+                    .font(.inspectorLabel)
+            }
+            .disabled(model.transcriptionState.isTranscribing)
+
+            Text("Transcribes the original microphone track, or the recorded audio when no separate microphone track exists. Video cuts are reflected in caption playback.")
+                .font(.inspectorLabel)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             switch model.transcriptionState {
             case .transcribing:
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Transcribing narration…")
+                    Text(model.transcriptionProgress > 0 ? "Transcribing audio… \(Int(model.transcriptionProgress * 100))%" : "Transcribing audio…")
                         .font(.inspectorLabel)
                         .foregroundStyle(.secondary)
                 }
+                Button("Cancel") { model.cancelTranscription() }
+                    .font(.inspectorLabel)
+                    .controlSize(.small)
             case .failed(let message):
                 Text(message)
                     .font(.inspectorLabel)
@@ -3660,11 +3689,11 @@ private struct StudioInspector: View {
                 if model.hasSubtitles {
                     subtitleEditor
                 } else {
-                    inspectorAction("Transcribe Narration", systemImage: "waveform") {
+                    inspectorAction("Transcribe Audio", systemImage: "waveform") {
                         model.transcribe()
                     }
 
-                    Text("Turns your microphone narration into subtitles, transcribed on this Mac.")
+                    Text("Creates timed captions with breaks at pauses in speech. Open Provider & Model to choose how to transcribe.")
                         .font(.inspectorLabel)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3739,7 +3768,7 @@ private struct StudioInspector: View {
 
             subtitleList
 
-            Text("Click a timestamp to jump there. Edit any line to fix the transcription.")
+            Text("Enter splits a caption. Shift+Enter adds a line break. Backspace at the start merges with the previous caption.")
                 .font(.inspectorLabel)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3763,6 +3792,11 @@ private struct StudioInspector: View {
             }
 
             if model.trimmableSilenceCount > 0 {
+                inspectorAction("Skip Silences (\(model.trimmableSilenceCount))", systemImage: "forward.end") {
+                    model.skipNarrationSilences()
+                }
+                Text("Skipped sections stay dimmed in the timeline. Select one and press Delete to restore it.")
+                    .font(.caption).foregroundStyle(.secondary)
                 inspectorAction(
                     "Trim Silences (\(model.trimmableSilenceCount))",
                     systemImage: "waveform.badge.minus"
@@ -3781,7 +3815,7 @@ private struct StudioInspector: View {
                     model.transcribe()
                 }
             }
-            Text("This transcription predates editing by text. Transcribe again to cut the video from its transcript.")
+            Text("This transcript has caption timings only. Use a model with word timestamps to cut video by selecting words.")
                 .font(.inspectorLabel)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3815,6 +3849,9 @@ private struct StudioInspector: View {
                     .fill(Color.primary.opacity(0.045))
             )
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .onChange(of: model.captionEditorFocus) { _, focus in
+                if let focus { proxy.scrollTo(focus.id, anchor: .center) }
+            }
             .onChange(of: model.activeSubtitleCue?.id) { _, activeID in
                 // Follow playback through the list, but never yank the list
                 // around while the user is scrubbing or editing.

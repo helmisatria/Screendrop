@@ -303,11 +303,13 @@ nonisolated enum RecordingAudioGainMix {
                 input.setVolume(0, at: .zero)
                 var coveredUntil: TimeInterval = 0
                 for clip in edit.clips.sorted(by: { $0.timelineStart < $1.timelineStart }) {
-                    setConstantVolume(
-                        0,
-                        range: coveredUntil..<clip.timelineStart,
-                        on: input
-                    )
+                    if clip.timelineStart > coveredUntil {
+                        setConstantVolume(
+                            0,
+                            range: coveredUntil..<clip.timelineStart,
+                            on: input
+                        )
+                    }
                     setConstantVolume(
                         clipVolume,
                         range: clip.timelineStart..<clip.timelineEnd,
@@ -340,16 +342,17 @@ nonisolated enum RecordingAudioGainMix {
         range: Range<TimeInterval>,
         on input: AVMutableAudioMixInputParameters
     ) {
-        let duration = CMTime(
-            seconds: range.upperBound - range.lowerBound,
-            preferredTimescale: 600
-        )
+        // Quantize both boundaries together; separately rounding a start
+        // and duration can overlap the next ramp at a fractional splice.
+        let start = CMTime(value: Int64((range.lowerBound * 600).rounded()), timescale: 600)
+        let end = CMTime(value: Int64((range.upperBound * 600).rounded()), timescale: 600)
+        let duration = end - start
         guard duration > .zero else { return }
         input.setVolumeRamp(
             fromStartVolume: volume,
             toEndVolume: volume,
             timeRange: CMTimeRange(
-                start: CMTime(seconds: range.lowerBound, preferredTimescale: 600),
+                start: start,
                 duration: duration
             )
         )

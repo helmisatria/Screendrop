@@ -86,6 +86,7 @@ nonisolated final class RecordingAudioExporter: @unchecked Sendable {
         let audioTrackEdits: [RecordingAudioTrackEdit]
         let audioTrackKinds: [RecordingAudioTrackKind]
         let format: RecordingAudioFormat
+        var replacementSlices: [RecordingReplacementAudioSlice]? = nil
     }
 
     enum ExportError: LocalizedError {
@@ -115,7 +116,7 @@ nonisolated final class RecordingAudioExporter: @unchecked Sendable {
         }
 
         let audioAsset: AVAsset = if let replacementURL = configuration.replacementURL {
-            AVURLAsset(url: replacementURL)
+            try await RecordingReplacementAudioSlice.asset(url: replacementURL, slices: configuration.replacementSlices, duration: duration)
         } else {
             try RecordingCompositionBuilder.makeAsset(
                 from: sourceAsset,

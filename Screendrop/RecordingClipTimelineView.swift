@@ -15,6 +15,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
     @Binding var playheadTime: TimeInterval
 
     let timeline: RecordingClipTimeline
+    let skippedClipIDs: Set<UUID>
     let sourceDuration: TimeInterval
     let thumbnails: RecordingTimelineThumbnailStore
     let onSelect: (UUID) -> Void
@@ -64,6 +65,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onDisplayTimelineChange: onDisplayTimelineChange,
             onZoom: onZoom
         )
+        nsView.skippedClipIDs = skippedClipIDs
         nsView.update(
             timeline: timeline,
             sourceDuration: sourceDuration,
@@ -172,6 +174,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
 }
 
 final class RecordingClipTimelineControl: NSView {
+    var skippedClipIDs: Set<UUID> = []
     var selectionDidChange: ((UUID) -> Void)?
     var playheadDidChange: ((TimeInterval) -> Void)?
     var hoverTimeDidChange: ((TimeInterval?) -> Void)?
@@ -487,6 +490,7 @@ final class RecordingClipTimelineControl: NSView {
             action: #selector(splitFromContextMenu),
             keyEquivalent: ""
         )
+        split.isEnabled = !skippedClipIDs.contains(location.segmentID)
         split.target = self
         split.image = NSImage(systemSymbolName: "scissors", accessibilityDescription: nil)
         menu.addItem(split)
@@ -494,13 +498,13 @@ final class RecordingClipTimelineControl: NSView {
         menu.addItem(.separator())
 
         let delete = NSMenuItem(
-            title: "Delete Clip",
+            title: skippedClipIDs.contains(location.segmentID) ? "Restore Clip" : "Skip Clip",
             action: #selector(deleteFromContextMenu),
             keyEquivalent: ""
         )
         delete.target = self
         delete.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
-        delete.isEnabled = timeline.segments.count > 1
+        delete.isEnabled = skippedClipIDs.contains(location.segmentID) || timeline.segments.count - skippedClipIDs.count > 1
         menu.addItem(delete)
         return menu
     }
@@ -608,7 +612,7 @@ final class RecordingClipTimelineControl: NSView {
             let rect = trimPreview?.clipID == clip.id
                 ? trimPreview?.keptRect
                 : clipRect(for: clip.id)
-            guard let rect else { return [] }
+            guard !skippedClipIDs.contains(clip.id), let rect else { return [] }
             return [
                 EdgeHit(
                     clipID: clip.id,
@@ -747,6 +751,15 @@ final class RecordingClipTimelineControl: NSView {
             drawThumbnails(in: rect, clip: clip, dirtyRect: dirtyRect)
             NSColor.black.withAlphaComponent(0.08).setFill()
             rect.intersection(dirtyRect).fill()
+            if skippedClipIDs.contains(clip.id) {
+                NSColor.windowBackgroundColor.withAlphaComponent(0.72).setFill()
+                rect.fill()
+                let label = "Skipped" as NSString
+                label.draw(in: rect.insetBy(dx: 6, dy: 17), withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                    .foregroundColor: NSColor.secondaryLabelColor
+                ])
+            }
             NSGraphicsContext.restoreGraphicsState()
         }
     }
@@ -1029,7 +1042,8 @@ final class RecordingClipTimelineControl: NSView {
     }
 
     private func drawSelectionGrooves() {
-        guard let geometry = selectionGeometry() else { return }
+        guard let geometry = selectionGeometry(),
+              !skippedClipIDs.contains(selectedClipID ?? UUID()) else { return }
         let handleRect = geometry.video
         guard handleRect.width > Metrics.selectionHandleInset * 4 else { return }
 

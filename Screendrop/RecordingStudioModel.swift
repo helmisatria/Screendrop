@@ -80,6 +80,8 @@ final class RecordingStudioModel {
     let screenPlayer = AVPlayer()
     let cameraPlayer = AVPlayer()
     private let trimPreviewPlayer = AVPlayer()
+    private var skippedPreviewTask: Task<Void, Never>?
+    private(set) var isPreviewingSkippedClip = false
     private(set) var trimPreviewSourceTime: TimeInterval?
 
     var previewPlayer: AVPlayer {
@@ -166,11 +168,14 @@ final class RecordingStudioModel {
     /// transcript view isn't invalidated on every 20 ms playback tick.
     private(set) var activeTranscriptWordIndex: Int?
     var transcriptionState = RecordingTranscriptionState.idle
+    private(set) var transcriptionProgress: Double = 0
+    private var transcriptionCache = OpenRouterTranscription.ChunkCache()
     private(set) var zoomCues: [ZoomCue] = []
     private(set) var viewportTimeline = ViewportTimeline.identity
     private(set) var pointerTimeline = PointerTimeline.empty
     private(set) var keystrokeTimeline = KeystrokeCaptionTimeline.empty
     var selectedCueID: UUID?
+    private(set) var skippedClips: [RecordingClipSegment] = []
     private(set) var clipTimeline = RecordingClipTimeline(segments: [])
     var selectedClipID: UUID?
     private(set) var recordedAudioTracks: [RecordingAudioTrack] = []
@@ -210,6 +215,7 @@ final class RecordingStudioModel {
     }
     /// The soundtrack standing in for the recording's own audio, resolved
     /// so both playback and export can use it without reloading tracks.
+    private var replacementAudioBasis = RecordingClipTimeline(segments: [])
     private(set) var replacementAudio: RecordingReplacementAudio?
     /// Why the last import was rejected, shown next to the Replace control.
     private(set) var replacementAudioError: String?
@@ -383,6 +389,8 @@ final class RecordingStudioModel {
                 sourceDuration: sourceDuration
             )
         }
+        skippedClips = document?.skippedClips ?? []
+        replacementAudioBasis = RecordingClipTimeline(segments: document?.replacementAudioBasis ?? displayClipTimeline.segments)
         duration = clipTimeline.duration
         selectedClipID = clipTimeline.segments.first?.id
         configureAudioTrackEdits(from: document?.audioTrackEdits)
@@ -484,6 +492,7 @@ final class RecordingStudioModel {
             NotificationCenter.default.removeObserver(endObserver)
         }
         endObserver = nil
+        endTrimPreview()
         screenPlayer.replaceCurrentItem(with: nil)
         trimPreviewPlayer.replaceCurrentItem(with: nil)
         cameraPlayer.replaceCurrentItem(with: nil)
@@ -507,6 +516,7 @@ final class RecordingStudioModel {
     }
 
     func play() {
+        endTrimPreview()
         guard !isPlaying else { return }
         if hoverPreviewTime != nil {
             hoverPreviewTime = nil
@@ -521,6 +531,7 @@ final class RecordingStudioModel {
     }
 
     func pause() {
+        if isPreviewingSkippedClip { endTrimPreview() }
         guard isPlaying else { return }
         isPlaying = false
         screenPlayer.pause()
@@ -566,7 +577,38 @@ final class RecordingStudioModel {
         }
     }
 
+    func previewSelectedSkippedClip() {
+        guard selectedClipIsSkipped, let clip = selectedClip else { return }
+        previewTrim(atSourceTime: clip.sourceStart)
+        isPreviewingSkippedClip = true
+        skippedPreviewTask = Task { [weak self] in
+            guard let self else { return }
+            let ready = await trimPreviewPlayer.seek(to: CMTime(seconds: clip.sourceStart, preferredTimescale: 600),
+                                                      toleranceBefore: .zero, toleranceAfter: .zero)
+            guard ready, !Task.isCancelled else { return }
+            trimPreviewPlayer.isMuted = false
+            trimPreviewPlayer.currentItem?.forwardPlaybackEndTime = CMTime(seconds: clip.sourceEnd, preferredTimescale: 600)
+            trimPreviewPlayer.play()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                guard !Task.isCancelled else { return }
+                let time = trimPreviewPlayer.currentTime().seconds
+                trimPreviewSourceTime = time
+                if time >= clip.sourceEnd - 0.03 {
+                    endTrimPreview()
+                    return
+                }
+            }
+        }
+    }
+
     func endTrimPreview() {
+        skippedPreviewTask?.cancel()
+        skippedPreviewTask = nil
+        isPreviewingSkippedClip = false
+        trimPreviewPlayer.pause()
+        trimPreviewPlayer.isMuted = true
+        trimPreviewPlayer.currentItem?.forwardPlaybackEndTime = .invalid
         guard trimPreviewSourceTime != nil else { return }
         trimPreviewSourceTime = nil
         movePlayers(to: hoverPreviewTime ?? currentTime)
@@ -659,9 +701,25 @@ final class RecordingStudioModel {
         return editUndoManager.canRedo
     }
 
+    var skipEdit: RecordingSkippedClips {
+        RecordingSkippedClips(playable: clipTimeline, skipped: skippedClips)
+    }
+
+    var displayClipTimeline: RecordingClipTimeline { skipEdit.display }
+    var skippedClipIDs: Set<UUID> { Set(skippedClips.map(\.id)) }
+    var selectedClipIsSkipped: Bool { selectedClipID.map { skippedClipIDs.contains($0) } ?? false }
+    private var replacementAudioSlices: [RecordingReplacementAudioSlice]? {
+        guard replacementAudio != nil else { return nil }
+        return RecordingReplacementAudioSlice.make(basis: replacementAudioBasis, output: clipTimeline)
+    }
+    private var outputAudioTrackEdits: [RecordingAudioTrackEdit] { skipEdit.outputAudio(audioTrackEdits) }
+
+    func outputTime(forDisplayTime time: TimeInterval) -> TimeInterval { skipEdit.outputTime(forDisplayTime: time) }
+    func displayTime(forOutputTime time: TimeInterval) -> TimeInterval { skipEdit.displayTime(forOutputTime: time) }
+
     var selectedClip: RecordingClipSegment? {
         guard let selectedClipID else { return nil }
-        return clipTimeline.segments.first { $0.id == selectedClipID }
+        return displayClipTimeline.segments.first { $0.id == selectedClipID }
     }
 
     var selectedAudioTrack: RecordingAudioTrack? {
@@ -686,11 +744,11 @@ final class RecordingStudioModel {
     }
 
     var canDeleteSelectedClip: Bool {
-        selectedClipID != nil && clipTimeline.segments.count > 1
+        selectedClipIsSkipped || (selectedClipID != nil && clipTimeline.segments.count > 1)
     }
 
     func selectClip(id: UUID) {
-        guard clipTimeline.segments.contains(where: { $0.id == id }) else { return }
+        guard displayClipTimeline.segments.contains(where: { $0.id == id }) else { return }
         selectedClipID = id
         selectedCueID = nil
         selectedAudioTrackKind = nil
@@ -782,7 +840,7 @@ final class RecordingStudioModel {
             .filter { $0.id != clipID }
             .sorted { $0.timelineStart < $1.timelineStart }
         let previousEnd = neighbors.last { $0.timelineEnd <= clip.timelineStart }?.timelineEnd ?? 0
-        let nextStart = neighbors.first { $0.timelineStart >= clip.timelineEnd }?.timelineStart ?? duration
+        let nextStart = neighbors.first { $0.timelineStart >= clip.timelineEnd }?.timelineStart ?? displayClipTimeline.duration
 
         let upper = max(previousEnd, nextStart - originalDuration)
         var start = min(max(requestedStart, previousEnd), upper)
@@ -844,7 +902,7 @@ final class RecordingStudioModel {
 
         let neighbors = originalTrack.clips.filter { $0.id != clipID }
         let nextStart = neighbors.filter { $0.timelineStart >= clip.timelineEnd }
-            .map(\.timelineStart).min() ?? duration
+            .map(\.timelineStart).min() ?? displayClipTimeline.duration
         let sourceUpperBound = clip.timelineEnd
             + (sourceDuration - clip.sourceEnd) / clip.speed
         let earliestEnd = clip.timelineStart + RecordingAudioClipSegment.minimumDuration
@@ -853,7 +911,7 @@ final class RecordingStudioModel {
             neighbors: neighbors,
             threshold: snapThreshold
         )
-        end = min(max(end, earliestEnd), nextStart, duration, sourceUpperBound)
+        end = min(max(end, earliestEnd), nextStart, displayClipTimeline.duration, sourceUpperBound)
         clip.sourceEnd += (end - clip.timelineEnd) * clip.speed
         clip.sourceEnd = min(max(clip.sourceEnd, clip.sourceStart), sourceDuration)
         audioTrackEdits[trackIndex] = originalTrack.replacing(clip)
@@ -893,9 +951,9 @@ final class RecordingStudioModel {
     private func audioSnapAnchors(
         neighbors: [RecordingAudioClipSegment]
     ) -> [TimeInterval] {
-        var anchors = [0, duration, currentTime]
+        var anchors = [0, displayClipTimeline.duration, displayTime(forOutputTime: currentTime)]
         var cutTime: TimeInterval = 0
-        for clip in clipTimeline.segments.dropLast() {
+        for clip in displayClipTimeline.segments.dropLast() {
             cutTime += clip.editorDuration
             anchors.append(cutTime)
         }
@@ -1041,20 +1099,12 @@ final class RecordingStudioModel {
     }
 
     func deleteSelectedClip() {
-        guard let selectedClipID,
-              let deletedRange = clipTimeline.editorRange(for: selectedClipID),
-              let next = clipTimeline.deleting(segmentID: selectedClipID) else {
-            return
-        }
-        let seekTime = min(deletedRange.lowerBound, next.duration)
-        let nextSelection = next.location(at: seekTime)?.segmentID
-            ?? next.segments.last?.id
-        applyClipTimeline(
-            next,
-            selectedID: nextSelection,
-            playheadTime: seekTime,
-            actionName: "Delete Clip"
-        )
+        guard let selectedClipID else { return }
+        let wasSkipped = selectedClipIsSkipped
+        let next = skipEdit.toggling(selectedClipID)
+        applyClipTimeline(next.playable, selectedID: selectedClipID,
+                          playheadTime: min(currentTime, next.playable.duration),
+                          actionName: wasSkipped ? "Restore Clip" : "Skip Clip", skipped: next.skipped)
     }
 
     func trimClip(_ replacement: RecordingClipSegment) {
@@ -1092,7 +1142,8 @@ final class RecordingStudioModel {
             full,
             selectedID: full.segments.first?.id,
             playheadTime: 0,
-            actionName: "Reset Clips"
+            actionName: "Reset Clips",
+            skipped: []
         )
     }
 
@@ -1101,12 +1152,15 @@ final class RecordingStudioModel {
         selectedID: UUID?,
         playheadTime: TimeInterval,
         actionName: String,
-        hoverTime: TimeInterval? = nil
+        hoverTime: TimeInterval? = nil,
+        skipped requestedSkipped: [RecordingClipSegment]? = nil
     ) {
+        let nextSkipped = requestedSkipped ?? skippedClips
         let next = requestedTimeline.normalized(to: sourceDuration)
-        guard !next.segments.isEmpty, next != clipTimeline else { return }
+        guard !next.segments.isEmpty, next != clipTimeline || nextSkipped != skippedClips else { return }
 
         let previousTimeline = clipTimeline
+        let previousSkipped = skippedClips
         let previousSelection = selectedClipID
         let previousTime = currentTime
         registerUndo(actionName) { target in
@@ -1114,7 +1168,8 @@ final class RecordingStudioModel {
                 previousTimeline,
                 selectedID: previousSelection,
                 playheadTime: previousTime,
-                actionName: actionName
+                actionName: actionName,
+                skipped: previousSkipped
             )
         }
 
@@ -1122,10 +1177,11 @@ final class RecordingStudioModel {
         hoverPreviewTime = nil
         timelineHoverTime = nil
         clipTimeline = next
+        skippedClips = nextSkipped
         duration = next.duration
         refreshUncustomizedAudioTrackEdits()
         selectedClipID = selectedID.flatMap { id in
-            next.segments.contains(where: { $0.id == id }) ? id : nil
+            displayClipTimeline.segments.contains(where: { $0.id == id }) ? id : nil
         } ?? next.segments.first?.id
         // Both motion timelines integrate along editor time, so a cut, trim,
         // or speed change invalidates them even when their source data did not
@@ -1153,14 +1209,15 @@ final class RecordingStudioModel {
                 videoTrack: screenVideoTrack,
                 timeline: clipTimeline,
                 sourceDuration: sourceDuration,
-                replacementAudio: replacementAudio
+                replacementAudio: replacementAudio,
+                replacementSlices: replacementAudioSlices
             )
         } else {
             playbackAsset = try RecordingCompositionBuilder.makeAsset(
                 from: screenAsset,
                 timeline: clipTimeline,
                 sourceDuration: sourceDuration,
-                audioTrackEdits: audioTrackEdits,
+                audioTrackEdits: outputAudioTrackEdits,
                 audioTrackKinds: recordedAudioTrackKindsInSourceOrder
             )
         }
@@ -1241,7 +1298,7 @@ final class RecordingStudioModel {
         item.audioMix = RecordingAudioGainMix.make(
             tracks: tracks,
             gainsDB: recordedAudioGains(forTrackCount: tracks.count),
-            trackEdits: audioTrackEdits
+            trackEdits: outputAudioTrackEdits
         )
     }
 
@@ -1303,10 +1360,10 @@ final class RecordingStudioModel {
         customizedAudioTrackKinds = Set(storedByKind.keys)
         audioTrackEdits = recordedAudioTrackKindsInSourceOrder.map { kind in
             let edit = storedByKind[kind]
-                ?? RecordingAudioTrackEdit.followingVideo(kind: kind, timeline: clipTimeline)
+                ?? RecordingAudioTrackEdit.followingVideo(kind: kind, timeline: displayClipTimeline)
             return edit.normalized(
                 sourceDuration: sourceDuration,
-                timelineDuration: duration
+                timelineDuration: displayClipTimeline.duration
             )
         }
     }
@@ -1319,7 +1376,7 @@ final class RecordingStudioModel {
             if customizedAudioTrackKinds.contains(kind), let existing = existingByKind[kind] {
                 return existing
             }
-            return RecordingAudioTrackEdit.followingVideo(kind: kind, timeline: clipTimeline)
+            return RecordingAudioTrackEdit.followingVideo(kind: kind, timeline: displayClipTimeline)
         }
         if let selectedAudioClipID,
            !audioTrackEdits.contains(where: { $0.clip(id: selectedAudioClipID) != nil }) {
@@ -1564,7 +1621,7 @@ final class RecordingStudioModel {
     }
 
     var visibleRecordedPressTimes: [TimeInterval] {
-        recordedPressTimes.compactMap { clipTimeline.editorTime(forSourceTime: $0) }
+        recordedPressTimes.compactMap { displayClipTimeline.editorTime(forSourceTime: $0) }
     }
 
     /// One visual block per cue on the edited timeline. A cue's per-segment
@@ -1575,7 +1632,7 @@ final class RecordingStudioModel {
         zoomCues
             .filter { !$0.isImplicit }
             .compactMap { cue in
-                let slices = clipTimeline.slices(overlapping: cue.start, sourceEnd: cue.end)
+                let slices = displayClipTimeline.slices(overlapping: cue.start, sourceEnd: cue.end)
                 guard let first = slices.first, let last = slices.last else { return nil }
                 return RecordingZoomTimelineBlock(
                     cue: cue,
@@ -1642,6 +1699,8 @@ final class RecordingStudioModel {
             zoomEnabled: zoomEnabled,
             zoomCues: zoomCues.filter { !$0.isImplicit },
             clipTimeline: clipTimeline,
+            skippedClips: skippedClips.isEmpty ? nil : skippedClips,
+            replacementAudioBasis: replacementAudio == nil ? nil : replacementAudioBasis.segments,
             exportSettings: exportSettings,
             showsClickEffects: showsClickEffects,
             showsKeystrokes: showsKeystrokes,
@@ -1768,6 +1827,8 @@ final class RecordingStudioModel {
                 sourceDuration: sourceDuration
             )
         }
+        skippedClips = document.skippedClips ?? []
+        replacementAudioBasis = RecordingClipTimeline(segments: document.replacementAudioBasis ?? displayClipTimeline.segments)
         duration = clipTimeline.duration
         selectedClipID = clipTimeline.segments.first?.id
         selectedAudioClipID = nil
@@ -1839,10 +1900,10 @@ final class RecordingStudioModel {
 
     // MARK: - Transcription
 
-    /// Only narrated sessions can be transcribed; the mic requirement means
-    /// legacy bare movies and silent captures never show the section.
+    /// Prefer microphone narration; a movie with only system audio can also
+    /// be transcribed using the same source-time caption timeline.
     var canTranscribe: Bool {
-        manifest?.includesMicrophone == true
+        hasRecordedAudio
     }
 
     var hasSubtitles: Bool {
@@ -1853,7 +1914,7 @@ final class RecordingStudioModel {
     /// nobody is speaking.
     func subtitleText(at time: TimeInterval) -> String? {
         guard showsSubtitles, hasSubtitles else { return nil }
-        return subtitleTimeline.text(at: clipTimeline.sourceTime(at: time))
+        return subtitleTimeline.text(at: trimPreviewSourceTime ?? clipTimeline.sourceTime(at: time))
     }
 
     /// Karaoke word state for the bar at this editor time; nil when the
@@ -1864,30 +1925,66 @@ final class RecordingStudioModel {
               !karaokeTimeline.isEmpty else {
             return nil
         }
-        return karaokeTimeline.line(at: clipTimeline.sourceTime(at: time))
+        return karaokeTimeline.line(at: trimPreviewSourceTime ?? clipTimeline.sourceTime(at: time))
     }
 
     func transcribe() {
-        guard !transcriptionState.isTranscribing, isLoaded else { return }
-        guard #available(macOS 26.0, *) else {
-            transcriptionState = .failed("On-device transcription requires macOS 26 or newer.")
+        guard !transcriptionState.isTranscribing, isLoaded, canTranscribe else { return }
+        let settings = TranscriptionSettings.shared
+        let provider = settings.provider
+        let pauseThreshold = settings.pauseThreshold
+        let configuration: CloudTranscriptionConfiguration?
+        do {
+            configuration = provider == .openRouter ? try settings.snapshot() : nil
+        } catch {
+            transcriptionState = .failed(error.localizedDescription)
             return
         }
         transcriptionState = .transcribing
+        transcriptionProgress = 0
+        let cache = transcriptionCache
         let movieURL = screenURL
         transcriptionTask = Task { [weak self] in
             do {
-                let transcript = try await RecordingTranscriptionService.transcribe(screenMovieURL: movieURL)
+                let transcript: RecordingTranscript
+                if let configuration {
+                    transcript = try await OpenRouterTranscription.transcribe(
+                        screenMovieURL: movieURL, configuration: configuration, cache: cache
+                    ) { [weak self] progress in
+                        await self?.updateTranscriptionProgress(progress)
+                    }
+                } else if #available(macOS 26.0, *) {
+                    transcript = try await RecordingTranscriptionService.transcribe(
+                        screenMovieURL: movieURL, pauseThreshold: pauseThreshold
+                    )
+                } else {
+                    self?.transcriptionState = .failed("On-device transcription requires macOS 26 or newer. Select OpenRouter to transcribe on this Mac.")
+                    return
+                }
                 guard !Task.isCancelled else { return }
                 self?.applyTranscription(transcript)
             } catch {
                 guard !Task.isCancelled else { return }
-                self?.transcriptionState = .failed(error.localizedDescription)
+                let recovery = configuration == nil ? "" : " Keep this editor open and choose Try Again to continue from your saved progress."
+                self?.transcriptionState = .failed(error.localizedDescription + recovery)
             }
         }
     }
 
+    private func updateTranscriptionProgress(_ progress: Double) {
+        guard !Task.isCancelled else { return }
+        transcriptionProgress = progress
+    }
+
+    func cancelTranscription() {
+        transcriptionTask?.cancel()
+        transcriptionTask = nil
+        transcriptionState = .idle
+        transcriptionProgress = 0
+    }
+
     private func applyTranscription(_ transcript: RecordingTranscript) {
+        transcriptionCache = OpenRouterTranscription.ChunkCache()
         subtitleCues = transcript.cues
         subtitleTimeline = SubtitleTimeline(cues: transcript.cues)
         transcriptWords = transcript.words
@@ -1899,6 +1996,8 @@ final class RecordingStudioModel {
     }
 
     func removeTranscription() {
+        cancelTranscription()
+        transcriptionCache = OpenRouterTranscription.ChunkCache()
         subtitleCues = []
         subtitleTimeline = .empty
         transcriptWords = []
@@ -1908,14 +2007,48 @@ final class RecordingStudioModel {
         scheduleProjectSave()
     }
 
+    var captionEditorFocus: CaptionEditorFocus?
+
     func updateSubtitleText(id: UUID, text: String) {
         guard let index = subtitleCues.firstIndex(where: { $0.id == id }),
               subtitleCues[index].text != text else {
             return
         }
-        subtitleCues[index].text = text
-        subtitleTimeline = SubtitleTimeline(cues: subtitleCues)
-        karaokeTimeline = KaraokeTimeline(cues: subtitleCues, words: transcriptWords)
+        var cues = subtitleCues
+        cues[index].text = text
+        applySubtitleCues(cues, actionName: "Edit Caption")
+    }
+
+    func splitSubtitle(id: UUID, selection: NSRange) {
+        guard let index = subtitleCues.firstIndex(where: { $0.id == id }),
+              let parts = RecordingCaptionEditing.split(subtitleCues[index], selection: selection, words: transcriptWords) else { return }
+        var cues = subtitleCues
+        cues.replaceSubrange(index...index, with: parts)
+        applyCaptionEdit(cues, focus: CaptionEditorFocus(id: parts[1].id, offset: 0),
+                         previousFocus: CaptionEditorFocus(id: id, offset: selection.location), actionName: "Split Caption")
+    }
+
+    func mergeSubtitleWithPrevious(id: UUID) {
+        guard let index = subtitleCues.firstIndex(where: { $0.id == id }), index > 0 else { return }
+        var cues = subtitleCues
+        let offset = (cues[index - 1].text as NSString).length
+        cues[index - 1].text += " " + cues[index].text
+        cues[index - 1].end = cues[index].end
+        cues.remove(at: index)
+        applyCaptionEdit(cues, focus: CaptionEditorFocus(id: cues[index - 1].id, offset: offset),
+                         previousFocus: CaptionEditorFocus(id: id, offset: 0), actionName: "Merge Captions")
+    }
+
+    private func applyCaptionEdit(_ cues: [RecordingSubtitleCue], focus: CaptionEditorFocus,
+                                  previousFocus: CaptionEditorFocus, actionName: String) {
+        let previous = subtitleCues
+        registerUndo(actionName) { target in
+            target.applyCaptionEdit(previous, focus: previousFocus, previousFocus: focus, actionName: actionName)
+        }
+        subtitleCues = cues
+        subtitleTimeline = SubtitleTimeline(cues: cues)
+        karaokeTimeline = KaraokeTimeline(cues: cues, words: transcriptWords)
+        captionEditorFocus = CaptionEditorFocus(id: focus.id, offset: focus.offset)
         scheduleProjectSave()
     }
 
@@ -1992,6 +2125,15 @@ final class RecordingStudioModel {
             TranscriptEditPlanner.fillerCutRanges(in: transcriptWords, sourceDuration: sourceDuration),
             actionName: "Remove Filler Words"
         )
+    }
+
+    func skipNarrationSilences() {
+        let next = skipEdit.skipping(TranscriptEditPlanner.silenceCutRanges(
+            in: transcriptWords, sourceDuration: sourceDuration
+        ))
+        applyClipTimeline(next.playable, selectedID: selectedClipID,
+                          playheadTime: min(currentTime, next.playable.duration),
+                          actionName: "Skip Silences", skipped: next.skipped)
     }
 
     func trimNarrationSilences() {
@@ -2270,8 +2412,9 @@ final class RecordingStudioModel {
             clipTimeline: clipTimeline,
             exportSettings: exportSettings,
             audioReplacementURL: replacementAudio?.url,
+            replacementSlices: replacementAudioSlices,
             recordedAudioGainsDB: recordedAudioGains(forTrackCount: expectedRecordedAudioTrackCount),
-            audioTrackEdits: audioTrackEdits,
+            audioTrackEdits: outputAudioTrackEdits,
             audioTrackKinds: recordedAudioTrackKindsInSourceOrder,
             reframe: reframe,
             fitContentAspect: fitContentAspect
@@ -2498,9 +2641,10 @@ final class RecordingStudioModel {
             clipTimeline: clipTimeline,
             replacementURL: replacementAudio?.url,
             recordedAudioGainsDB: recordedAudioGains(forTrackCount: expectedRecordedAudioTrackCount),
-            audioTrackEdits: audioTrackEdits,
+            audioTrackEdits: outputAudioTrackEdits,
             audioTrackKinds: recordedAudioTrackKindsInSourceOrder,
-            format: audioExportFormat
+            format: audioExportFormat,
+            replacementSlices: replacementAudioSlices
         )
         let suggestedFileName = audioExportSuggestedFileName
         let dockProgressID = DockExportProgressCoordinator.shared.start()
@@ -2575,6 +2719,7 @@ final class RecordingStudioModel {
             storedURL = pickedURL
         }
 
+        let importBasis = clipTimeline
         replacementAudioTask = Task { [weak self] in
             let resolved = await RecordingReplacementAudio.load(
                 url: storedURL,
@@ -2589,6 +2734,7 @@ final class RecordingStudioModel {
                 self.clearReplacementAudio()
                 return
             }
+            self.replacementAudioBasis = importBasis
             self.replacementAudio = resolved
             self.applyReplacementAudioToPlayback()
         }

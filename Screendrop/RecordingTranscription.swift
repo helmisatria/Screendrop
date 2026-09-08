@@ -159,6 +159,12 @@ nonisolated struct KaraokeTimeline: Sendable {
         /// How many words have started; spoken words render fully lit
         /// even once the active highlight has moved on.
         var spokenCount: Int
+        var separators: [String] = []
+
+        func textPiece(at index: Int) -> String {
+            let separator = separators.indices.contains(index) ? separators[index] : (index > 0 ? " " : "")
+            return separator + words[index]
+        }
     }
 
     private struct CueLine {
@@ -166,6 +172,7 @@ nonisolated struct KaraokeTimeline: Sendable {
         var end: TimeInterval
         /// Display words from the cue's (possibly hand-edited) text.
         var words: [String]
+        var separators: [String]
         /// Per-display-word timing, index-mapped from the timed words so
         /// text edits keep working even when word counts drift.
         var timings: [(start: TimeInterval, end: TimeInterval)]
@@ -201,6 +208,15 @@ nonisolated struct KaraokeTimeline: Sendable {
                 .split(whereSeparator: \.isWhitespace)
                 .map(String.init)
             guard !displayWords.isEmpty else { return nil }
+            let text = cue.text as NSString
+            let matches = try! NSRegularExpression(pattern: "\\S+").matches(in: cue.text, range: NSRange(location: 0, length: text.length))
+            var previousEnd = 0
+            let separators = matches.enumerated().map { index, match in
+                let gap = text.substring(with: NSRange(location: previousEnd, length: match.range.location - previousEnd))
+                previousEnd = NSMaxRange(match.range)
+                return index == 0 ? "" : (gap.contains("\n") ? "\n" : " ")
+            }
+
             let timings = displayWords.indices.map { index in
                 let timedIndex = min(
                     timed.count - 1,
@@ -212,6 +228,7 @@ nonisolated struct KaraokeTimeline: Sendable {
                 start: cue.start,
                 end: cue.end,
                 words: displayWords,
+                separators: separators,
                 timings: timings
             )
         }
@@ -254,7 +271,8 @@ nonisolated struct KaraokeTimeline: Sendable {
         return Line(
             words: cue.words,
             activeIndex: activeIndex,
-            spokenCount: spokenCount
+            spokenCount: spokenCount,
+            separators: cue.separators
         )
     }
 }
@@ -337,7 +355,7 @@ nonisolated enum RecordingTranscriptionService {
     private static let minimumCueDuration: TimeInterval = 0.8
 
     @available(macOS 26.0, *)
-    static func transcribe(screenMovieURL: URL) async throws -> RecordingTranscript {
+    static func transcribe(screenMovieURL: URL, pauseThreshold: Double = 0.9) async throws -> RecordingTranscript {
         let narrationURL = try await extractNarrationAudio(from: screenMovieURL)
         defer { try? FileManager.default.removeItem(at: narrationURL) }
 
@@ -365,7 +383,7 @@ nonisolated enum RecordingTranscriptionService {
         }
 
         let words = try await collectedWords
-        let cues = makeCues(from: words)
+        let cues = makeCues(from: words, pauseThreshold: pauseThreshold)
         guard !cues.isEmpty else { throw TranscriptionError.noSpeechDetected }
         return RecordingTranscript(words: words, cues: cues)
     }
@@ -399,7 +417,7 @@ nonisolated enum RecordingTranscriptionService {
     /// as mono, so the mono track is the narration whenever both exist.
     /// Track timing is preserved so cue timestamps stay on the movie's
     /// timeline.
-    private static func extractNarrationAudio(from movieURL: URL) async throws -> URL {
+    static func extractNarrationAudio(from movieURL: URL) async throws -> URL {
         let asset = AVURLAsset(url: movieURL)
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         guard var narrationTrack = audioTracks.last else {
@@ -437,8 +455,13 @@ nonisolated enum RecordingTranscriptionService {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("screendrop-narration-\(UUID().uuidString)")
             .appendingPathExtension("m4a")
-        try await exportSession.export(to: outputURL, as: .m4a)
-        return outputURL
+        do {
+            try await exportSession.export(to: outputURL, as: .m4a)
+            return outputURL
+        } catch {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw error
+        }
     }
 
     @available(macOS 26.0, *)
@@ -464,7 +487,10 @@ nonisolated enum RecordingTranscriptionService {
         return words
     }
 
-    static func makeCues(from words: [RecordingTranscriptWord]) -> [RecordingSubtitleCue] {
+    static func makeCues(
+        from words: [RecordingTranscriptWord],
+        pauseThreshold: Double = cueGapThreshold
+    ) -> [RecordingSubtitleCue] {
         var cues: [RecordingSubtitleCue] = []
         var text = ""
         var start: TimeInterval = 0
@@ -485,7 +511,7 @@ nonisolated enum RecordingTranscriptionService {
             let wordLength = word.text.trimmingCharacters(in: .whitespaces).count
             if !text.isEmpty {
                 let breaksOnLength = text.count + wordLength > maximumCueCharacters
-                let breaksOnSilence = word.start - end > cueGapThreshold
+                let breaksOnSilence = word.start - end >= max(0.1, pauseThreshold)
                 let breaksOnDuration = word.end - start > maximumCueDuration
                 if breaksOnLength || breaksOnSilence || breaksOnDuration {
                     flush()
@@ -501,6 +527,10 @@ nonisolated enum RecordingTranscriptionService {
             end = max(end, word.end)
         }
         flush()
+        // Minimum display time must never overlap the next spoken cue.
+        for index in cues.indices.dropLast() {
+            cues[index].end = min(cues[index].end, cues[index + 1].start)
+        }
         return cues
     }
 }

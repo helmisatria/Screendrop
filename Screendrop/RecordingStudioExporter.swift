@@ -55,6 +55,7 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
         /// audio. It is already the finished cut's audio, so it plays flat
         /// from zero instead of being re-cut through the clip timeline.
         let audioReplacementURL: URL?
+        let replacementSlices: [RecordingReplacementAudioSlice]?
         /// Static dB gain for each recorded source track, in source order.
         /// Ignored when a replacement soundtrack is present.
         let recordedAudioGainsDB: [Double]
@@ -88,6 +89,7 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
             clipTimeline: RecordingClipTimeline,
             exportSettings: VideoCompressionSettings,
             audioReplacementURL: URL? = nil,
+            replacementSlices: [RecordingReplacementAudioSlice]? = nil,
             recordedAudioGainsDB: [Double] = [],
             audioTrackEdits: [RecordingAudioTrackEdit] = [],
             audioTrackKinds: [RecordingAudioTrackKind] = [],
@@ -111,6 +113,7 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
             self.clipTimeline = clipTimeline
             self.exportSettings = exportSettings
             self.audioReplacementURL = audioReplacementURL
+            self.replacementSlices = replacementSlices
             self.recordedAudioGainsDB = recordedAudioGainsDB
             self.audioTrackEdits = audioTrackEdits
             self.audioTrackKinds = audioTrackKinds
@@ -217,7 +220,9 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
         var replacementReader: AVAssetReader?
         if !configuration.exportSettings.removeAudio {
             if let replacementURL = configuration.audioReplacementURL {
-                let replacementAsset = AVURLAsset(url: replacementURL)
+                let replacementAsset = try await RecordingReplacementAudioSlice.asset(
+                    url: replacementURL, slices: configuration.replacementSlices, duration: clipTimeline.duration
+                )
                 let replacementTracks = try await replacementAsset.loadTracks(withMediaType: .audio)
                 if !replacementTracks.isEmpty {
                     let reader = try AVAssetReader(asset: replacementAsset)
@@ -1066,7 +1071,7 @@ nonisolated private final class StudioFrameCompositor: @unchecked Sendable {
         }
 
         let text = NSMutableAttributedString()
-        for (index, word) in karaokeLine.words.enumerated() {
+        for index in karaokeLine.words.indices {
             let color: CGColor
             if index == karaokeLine.activeIndex {
                 color = SubtitleBarMetrics.karaokeAccent
@@ -1076,7 +1081,7 @@ nonisolated private final class StudioFrameCompositor: @unchecked Sendable {
                 color = CGColor(gray: 1, alpha: SubtitleBarMetrics.karaokeUpcomingAlpha)
             }
             text.append(NSAttributedString(
-                string: index > 0 ? " \(word)" : word,
+                string: karaokeLine.textPiece(at: index),
                 attributes: [fontKey: font, colorKey: color]
             ))
         }
