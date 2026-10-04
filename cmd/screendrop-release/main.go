@@ -123,6 +123,11 @@ func main() {
 	flag.StringVar(&notaryProfile, "notary-profile", "screendrop-notary", "notarytool keychain profile name (with -build).")
 	flag.Parse()
 
+	// The inherited release tool publishes to the upstream author's accounts.
+	if githubRepo != "helmisatria/Screendrop" {
+		fail("Upstream release CLI is disabled in this fork. See docs/releases.md for our release setup.")
+	}
+
 	homeDir, _ := os.UserHomeDir()
 	appPath := filepath.Join(homeDir, "Downloads", appName)
 	dmgPath := filepath.Join(homeDir, "Downloads", dmgName)

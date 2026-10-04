@@ -26,6 +26,11 @@ final class UpdaterManager: NSObject, ObservableObject {
         set { controller.updater.automaticallyChecksForUpdates = newValue }
     }
 
+    var automaticallyDownloadsUpdates: Bool {
+        get { controller.updater.automaticallyDownloadsUpdates }
+        set { controller.updater.automaticallyDownloadsUpdates = newValue }
+    }
+
     private override init() {
         controller = SPUStandardUpdaterController(
             startingUpdater: false,
@@ -42,6 +47,9 @@ final class UpdaterManager: NSObject, ObservableObject {
         #if DEBUG
         return
         #else
+        // Enable fork updates only after our own signing key is configured.
+        guard let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+              !key.isEmpty else { return }
         controller.startUpdater()
         #endif
     }

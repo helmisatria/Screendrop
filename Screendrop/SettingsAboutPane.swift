@@ -55,6 +55,13 @@ struct SettingsAboutPane: View {
                     Text("Automatically check for updates")
                 }
 
+                Toggle(isOn: Binding(
+                    get: { updaterManager.automaticallyDownloadsUpdates },
+                    set: { updaterManager.automaticallyDownloadsUpdates = $0 }
+                )) {
+                    SettingsControlLabel("Download and install updates automatically", detail: "Downloads updates in the background and installs them when you quit Screendrop.")
+                }
+
                 Button("Check for Updates...") {
                     updaterManager.checkForUpdates()
                 }
@@ -65,7 +72,7 @@ struct SettingsAboutPane: View {
                 Text("Screendrop is a lightweight opensource app for capturing screenshots and screen recordings on macOS.")
                     .foregroundStyle(.secondary)
 
-                Link("GitHub", destination: URL(string: "https://github.com/fayazara/screendrop")!)
+                Link("GitHub", destination: URL(string: "https://github.com/helmisatria/Screendrop")!)
             }
 
             Section("Credits") {
