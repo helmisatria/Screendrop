@@ -457,10 +457,6 @@ final class RecordingClipTimelineControl: NSView {
             splitRequested?(hoverTime)
             return
         }
-        if modifiers.isEmpty, characters == "s" {
-            splitRequested?(playheadTime)
-            return
-        }
         if modifiers.subtracting([.shift, .numericPad, .function]).isEmpty,
            event.keyCode == 123 || event.keyCode == 124 {
             let magnitude = modifiers.contains(.shift) ? Metrics.coarseStep : Metrics.frameStep

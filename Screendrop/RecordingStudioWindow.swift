@@ -1730,6 +1730,10 @@ private struct StudioTimelineEditor: View {
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 14)
+        .background(StudioKeyShortcutMonitor(actions: [
+            "s": splitAtPlayhead,
+            "0": backToStart
+        ]))
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .top) {
             Rectangle()
@@ -2135,15 +2139,26 @@ private struct StudioTimelineEditor: View {
         }
     }
 
+    /// Splits the selected audio clip, or the video when no audio clip is
+    /// selected.
+    private func splitAtPlayhead() {
+        if model.selectedAudioClipID != nil {
+            model.splitSelectedAudioClip(at: model.displayTime(forOutputTime: model.currentTime))
+        } else {
+            model.splitClip(at: model.currentTime)
+        }
+    }
+
+    private func backToStart() {
+        model.pause()
+        model.seek(to: 0)
+    }
+
     private var editControls: some View {
         HStack(spacing: 6) {
             StudioTransportTray {
-                timelineButton("Split at Playhead (⌘B)", systemImage: "scissors") {
-                    if model.selectedAudioClipID != nil {
-                        model.splitSelectedAudioClip(at: model.displayTime(forOutputTime: model.currentTime))
-                    } else {
-                        model.splitClip(at: model.currentTime)
-                    }
+                timelineButton("Split at Playhead (S or ⌘B)", systemImage: "scissors") {
+                    splitAtPlayhead()
                 }
                 .keyboardShortcut("b", modifiers: .command)
 
@@ -2194,9 +2209,8 @@ private struct StudioTimelineEditor: View {
                 .fixedSize()
 
             HStack(spacing: 4) {
-                timelineButton("Back to Start", systemImage: "backward.end.fill") {
-                    model.pause()
-                    model.seek(to: 0)
+                timelineButton("Back to Start (0)", systemImage: "backward.end.fill") {
+                    backToStart()
                 }
 
                 Button {
@@ -2656,6 +2670,57 @@ private struct PlayheadCrownShape: Shape {
         )
         path.closeSubpath()
         return path
+    }
+}
+
+/// Single-key Studio shortcuts (S to split, 0 to go to the start) that work
+/// anywhere in the window, even after an inspector control takes focus.
+/// Typing in a text field is left alone.
+private struct StudioKeyShortcutMonitor: NSViewRepresentable {
+    let actions: [String: () -> Void]
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.actions = actions
+        return view
+    }
+
+    func updateNSView(_ nsView: MonitorView, context: Context) {
+        nsView.actions = actions
+    }
+
+    final class MonitorView: NSView {
+        var actions: [String: () -> Void] = [:]
+        private var eventMonitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            removeEventMonitor()
+            guard window != nil else { return }
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        deinit {
+            removeEventMonitor()
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard let window, event.window === window,
+                  event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                  let key = event.charactersIgnoringModifiers?.lowercased(),
+                  let action = actions[key],
+                  !(window.firstResponder is NSText) else { return event }
+            if !event.isARepeat { action() }
+            return nil
+        }
+
+        private func removeEventMonitor() {
+            guard let eventMonitor else { return }
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
     }
 }
 
@@ -3832,7 +3897,7 @@ private struct StudioInspector: View {
                 .font(.inspectorLabel)
                 .foregroundStyle(.secondary)
 
-                Text("Drag the clip to move it. Drag either white edge to trim. Split with T, or delete it to leave silence.")
+                Text("Drag the clip to move it. Drag either white edge to trim. Split at the playhead with S, or delete it to leave silence.")
                     .font(.inspectorLabel)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
