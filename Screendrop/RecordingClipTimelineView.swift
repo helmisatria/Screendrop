@@ -550,7 +550,7 @@ final class RecordingClipTimelineControl: NSView {
         guard let dragStartPoint,
               let startTimeline = dragStartTimeline,
               let original = dragStartClip,
-              let index = startTimeline.segments.firstIndex(where: { $0.id == clipID }) else {
+              startTimeline.segments.contains(where: { $0.id == clipID }) else {
             return
         }
 
@@ -569,10 +569,11 @@ final class RecordingClipTimelineControl: NSView {
                 * startTimeline.duration
             delta = editorDelta * original.speed
         }
-        let previousEnd = index > 0 ? startTimeline.segments[index - 1].sourceEnd : 0
-        let nextStart = index + 1 < startTimeline.segments.count
-            ? startTimeline.segments[index + 1].sourceStart
-            : sourceDuration
+        // Skipped neighbours don't stop the drag; the trim eats into them.
+        let kept = startTimeline.segments.filter { !skippedClipIDs.contains($0.id) }
+        let skipped = startTimeline.segments.filter { skippedClipIDs.contains($0.id) }
+        let previousEnd = kept.last { $0.sourceEnd <= original.sourceStart }?.sourceEnd ?? 0
+        let nextStart = kept.first { $0.sourceStart >= original.sourceEnd }?.sourceStart ?? sourceDuration
         var replacement = original
 
         switch edge {
@@ -587,7 +588,8 @@ final class RecordingClipTimelineControl: NSView {
                 min(original.sourceEnd + delta, nextStart)
             )
         }
-        timeline = startTimeline.replacing(replacement)
+        timeline = RecordingSkippedClips(playable: RecordingClipTimeline(segments: kept), skipped: skipped)
+            .trimming(replacement).display
         publishDisplayTimelineIfNeeded()
     }
 

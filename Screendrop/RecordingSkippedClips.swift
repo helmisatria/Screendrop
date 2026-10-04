@@ -50,6 +50,32 @@ nonisolated struct RecordingSkippedClips: Equatable, Sendable {
                     skipped: skipped + [clip])
     }
 
+    /// A kept clip's trim wins over skipped footage: skipped neighbours it
+    /// now covers shrink, and any sliver shorter than a clip disappears.
+    func trimming(_ replacement: RecordingClipSegment) -> Self {
+        Self(playable: playable.replacing(replacement),
+             skipped: Self.carving(replacement.sourceStart...replacement.sourceEnd, from: skipped))
+    }
+
+    static func carving(_ range: ClosedRange<TimeInterval>, from clips: [RecordingClipSegment]) -> [RecordingClipSegment] {
+        clips.flatMap { clip -> [RecordingClipSegment] in
+            guard range.upperBound > clip.sourceStart, range.lowerBound < clip.sourceEnd else { return [clip] }
+            var pieces: [RecordingClipSegment] = []
+            if range.lowerBound - clip.sourceStart >= RecordingClipSegment.minimumDuration {
+                var head = clip
+                head.sourceEnd = range.lowerBound
+                pieces.append(head)
+            }
+            if clip.sourceEnd - range.upperBound >= RecordingClipSegment.minimumDuration {
+                var tail = clip
+                tail.id = pieces.isEmpty ? clip.id : UUID()
+                tail.sourceStart = range.upperBound
+                pieces.append(tail)
+            }
+            return pieces
+        }
+    }
+
     func outputTime(forDisplayTime time: TimeInterval) -> TimeInterval {
         let source = display.sourceTime(at: time)
         if let exact = playable.editorTime(forSourceTime: source) { return exact }

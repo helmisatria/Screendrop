@@ -1175,13 +1175,13 @@ final class RecordingStudioModel {
     }
 
     func trimClip(_ replacement: RecordingClipSegment) {
-        let next = clipTimeline.replacing(replacement)
-        guard next != clipTimeline else { return }
+        let next = skipEdit.trimming(replacement)
         applyClipTimeline(
-            next,
+            next.playable,
             selectedID: replacement.id,
-            playheadTime: min(currentTime, next.duration),
-            actionName: "Trim Clip"
+            playheadTime: min(currentTime, next.playable.duration),
+            actionName: "Trim Clip",
+            skipped: next.skipped
         )
     }
 
