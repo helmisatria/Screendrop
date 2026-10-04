@@ -1821,7 +1821,10 @@ final class RecordingStudioModel {
     /// cache: History previews it and Share would upload it.
     private func dropStaleRender(for document: RecordingEditDocument, in session: RecordingSession) {
         guard session.existingFinalURL != nil else { return }
-        guard session.freshFinalURL(matching: document) == nil else { return }
+        guard session.freshFinalURL(
+            matching: document,
+            captionsEnabled: FeatureSettings.shared.isEnabled(.captions)
+        ) == nil else { return }
         session.removeFinalVideos()
     }
 
@@ -1980,7 +1983,7 @@ final class RecordingStudioModel {
     /// Prefer microphone narration; a movie with only system audio can also
     /// be transcribed using the same source-time caption timeline.
     var canTranscribe: Bool {
-        hasRecordedAudio
+        FeatureSettings.shared.isEnabled(.captions) && hasRecordedAudio
     }
 
     var hasSubtitles: Bool {
@@ -1990,7 +1993,7 @@ final class RecordingStudioModel {
     /// Subtitle text to draw over the card right now; nil when hidden or
     /// nobody is speaking.
     func subtitleText(at time: TimeInterval) -> String? {
-        guard showsSubtitles, hasSubtitles else { return nil }
+        guard FeatureSettings.shared.isEnabled(.captions), showsSubtitles, hasSubtitles else { return nil }
         return subtitleTimeline.text(at: trimPreviewSourceTime ?? clipTimeline.sourceTime(at: time))
     }
 
@@ -1998,7 +2001,7 @@ final class RecordingStudioModel {
     /// style doesn't highlight words or no timings exist, in which case
     /// the bar renders `subtitleText` plainly.
     func subtitleKaraokeLine(at time: TimeInterval) -> KaraokeTimeline.Line? {
-        guard showsSubtitles, subtitleStyle.highlightsSpokenWord,
+        guard FeatureSettings.shared.isEnabled(.captions), showsSubtitles, subtitleStyle.highlightsSpokenWord,
               !karaokeTimeline.isEmpty else {
             return nil
         }
@@ -2496,7 +2499,8 @@ final class RecordingStudioModel {
             audioVolume: Double(audioVolume),
             reframe: reframe,
             fitContentAspect: fitContentAspect,
-            usesUniformPadding: exportAspect == .original
+            usesUniformPadding: exportAspect == .original,
+            captionsEnabled: FeatureSettings.shared.isEnabled(.captions)
         )
     }
 
@@ -2597,7 +2601,10 @@ final class RecordingStudioModel {
         // when this exact document already has a flattened deliverable.
         guard ProcessInfo.processInfo.environment["SCREENDROP_EXPORT_BYPASS_CACHE"] != "1" else { return nil }
         guard let session else { return nil }
-        return session.freshFinalURL(matching: currentDocument())
+        return session.freshFinalURL(
+            matching: currentDocument(),
+            captionsEnabled: FeatureSettings.shared.isEnabled(.captions)
+        )
     }
 
     private var exportSuggestedFileName: String {
@@ -2948,7 +2955,8 @@ final class RecordingStudioModel {
                     if let session {
                         uploadURL = try session.installFinalVideo(
                             movingFrom: temporaryURL,
-                            renderedFrom: renderedDocument
+                            renderedFrom: renderedDocument,
+                            captionsEnabled: configuration.captionsEnabled
                         )
                     } else {
                         uploadURL = temporaryURL

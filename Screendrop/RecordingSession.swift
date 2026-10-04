@@ -118,7 +118,8 @@ nonisolated struct RecordingSession: Sendable, Equatable {
     @discardableResult
     func installFinalVideo(
         movingFrom temporaryURL: URL,
-        renderedFrom document: RecordingEditDocument? = nil
+        renderedFrom document: RecordingEditDocument? = nil,
+        captionsEnabled: Bool = true
     ) throws -> URL {
         let container = VideoExportContainer(fileExtension: temporaryURL.pathExtension) ?? .default
         let destinationURL = finalURL(for: container)
@@ -132,7 +133,7 @@ nonisolated struct RecordingSession: Sendable, Equatable {
         for stale in VideoExportContainer.allCases where stale != container {
             try? FileManager.default.removeItem(at: finalURL(for: stale))
         }
-        writeRenderStamp(document)
+        writeRenderStamp(document, captionsEnabled: captionsEnabled)
         return destinationURL
     }
 
@@ -246,6 +247,7 @@ nonisolated struct RecordingSession: Sendable, Equatable {
     private struct RenderStamp: Codable {
         var layoutVersion = 1
         var document: RecordingEditDocument?
+        var captionsEnabled: Bool?
     }
 
     func loadRenderStamp() -> RecordingEditDocument? {
@@ -257,16 +259,24 @@ nonisolated struct RecordingSession: Sendable, Equatable {
         return try? CaptureManifest.decoder.decode(RecordingEditDocument.self, from: data)
     }
 
-    func writeRenderStamp(_ document: RecordingEditDocument?) {
-        guard let data = try? CaptureManifest.encoder.encode(RenderStamp(document: document)) else { return }
+    func writeRenderStamp(_ document: RecordingEditDocument?, captionsEnabled: Bool = true) {
+        guard let data = try? CaptureManifest.encoder.encode(RenderStamp(
+            document: document,
+            captionsEnabled: captionsEnabled
+        )) else { return }
         try? data.write(to: renderStampURL, options: .atomic)
     }
 
     /// The flattened deliverable only when it provably matches `document`.
     /// Export and Share can then skip the render instead of trusting that
     /// nothing has changed since it was made.
-    func freshFinalURL(matching document: RecordingEditDocument?) -> URL? {
+    func freshFinalURL(matching document: RecordingEditDocument?, captionsEnabled: Bool = true) -> URL? {
         guard let existing = existingFinalURL else { return nil }
+        let renderStamp = (try? Data(contentsOf: renderStampURL)).flatMap {
+            try? CaptureManifest.decoder.decode(RenderStamp.self, from: $0)
+        }
+        // A cached export must use the same caption preference as this request.
+        guard (renderStamp?.captionsEnabled ?? true) == captionsEnabled else { return nil }
         let stamp = loadRenderStamp()
         // Original's geometry changed even when no edit settings changed.
         // This also versions default renders that have no edit document yet.

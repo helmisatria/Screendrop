@@ -52,6 +52,7 @@ struct RecordingStudioWindow: View {
 
 private struct RecordingStudioContent: View {
     @Bindable var model: RecordingStudioModel
+    @State private var features = FeatureSettings.shared
     @State private var isInspectorPresented = true
     @State private var closeGuard = EditorCloseGuard()
 
@@ -73,6 +74,9 @@ private struct RecordingStudioContent: View {
             }
         }
         .frame(minWidth: 980, minHeight: 720)
+        .onChange(of: features.isEnabled(.captions)) { _, enabled in
+            if !enabled { model.cancelTranscription() }
+        }
         .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .inspector(isPresented: $isInspectorPresented) {
             StudioInspector(model: model)
@@ -3348,6 +3352,7 @@ private enum StudioTranscriptTab: CaseIterable, Identifiable {
 }
 
 private struct StudioInspector: View {
+    @State private var features = FeatureSettings.shared
     /// Whole-number playback rates offered for a clip, within
     /// `RecordingClipSegment`'s 1...8 range.
     private static let clipSpeedPresets: [Double] = [1, 2, 3, 4, 6, 8]
@@ -3523,7 +3528,7 @@ private struct StudioInspector: View {
                     }
                 }
 
-                if model.canTranscribe || model.hasSubtitles {
+                if features.isEnabled(.captions), model.canTranscribe || model.hasSubtitles {
                     InspectorDisclosureSection(
                         title: "Transcription",
                         summary: transcriptionSummary,

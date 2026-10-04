@@ -13,6 +13,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case overlay
     case cloud
     case transcription
+    case features
     case about
 
     var id: Self { self }
@@ -24,6 +25,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .video: "Screen Recordings"
         case .overlay: "Overlay"
         case .transcription: "Transcription"
+        case .features: "Features"
         case .cloud: "Cloud"
         case .about: "About"
         }
@@ -36,6 +38,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .video: "video"
         case .overlay: "square.on.square"
         case .transcription: "captions.bubble"
+        case .features: "switch.2"
         case .cloud: "icloud.and.arrow.up"
         case .about: "info.circle"
         }
@@ -64,6 +67,7 @@ private enum AppVersion {
 
 struct SettingsView: View {
     @State private var navigation = SettingsNavigation.shared
+    @State private var features = FeatureSettings.shared
     @State private var navigationHistory: [SettingsTab] = [.general]
     @State private var historyIndex = 0
     @State private var isHistoryNavigation = false
@@ -113,8 +117,17 @@ struct SettingsView: View {
             navigationHistory = [activeTab]
             historyIndex = 0
         }
-        .onChange(of: navigation.selectedTab) { _, _ in
+        .onChange(of: navigation.selectedTab) { _, selectedTab in
+            if selectedTab == .transcription, !features.isEnabled(.captions) {
+                navigation.selectedTab = .features
+                return
+            }
             recordNavigation()
+        }
+        .onChange(of: features.isEnabled(.captions)) { _, enabled in
+            if !enabled, navigation.selectedTab == .transcription {
+                navigation.selectedTab = .features
+            }
         }
     }
 
@@ -160,12 +173,15 @@ struct SettingsView: View {
 
 private struct SettingsSidebarView: View {
     @Binding var selectedTab: SettingsTab?
+    @State private var features = FeatureSettings.shared
 
     var body: some View {
         List(selection: $selectedTab) {
             ForEach(SettingsTab.allCases) { tab in
-                SettingsSidebarRow(tab: tab)
-                    .tag(tab)
+                if tab != .transcription || features.isEnabled(.captions) {
+                    SettingsSidebarRow(tab: tab)
+                        .tag(tab)
+                }
             }
 
             SettingsSidebarFooter()
@@ -221,6 +237,8 @@ private struct SettingsDetailView: View {
                 OverlaySettingsPane()
             case .transcription:
                 TranscriptionSettingsPane()
+            case .features:
+                FeaturesSettingsPane()
             case .cloud:
                 CloudSettingsPane()
             case .about:

@@ -38,7 +38,10 @@ enum RecordingSessionRenderer {
         guard session.hasCamera || pointerSynthesized || editDocument != nil else {
             return session.screenURL
         }
-        if let existing = session.freshFinalURL(matching: editDocument) { return existing }
+        if let existing = session.freshFinalURL(
+            matching: editDocument,
+            captionsEnabled: FeatureSettings.shared.isEnabled(.captions)
+        ) { return existing }
 
         let configuration = try await makeConfiguration(for: session)
         let temporaryURL = try await RecordingStudioExporter().export(configuration) { progress in
@@ -47,7 +50,8 @@ enum RecordingSessionRenderer {
         do {
             return try session.installFinalVideo(
                 movingFrom: temporaryURL,
-                renderedFrom: editDocument
+                renderedFrom: editDocument,
+                captionsEnabled: configuration.captionsEnabled
             )
         } catch {
             try? FileManager.default.removeItem(at: temporaryURL)
@@ -212,7 +216,8 @@ enum RecordingSessionRenderer {
             audioVolume: document?.audioVolume ?? 1,
             reframe: reframe,
             fitContentAspect: fitContentAspect,
-            usesUniformPadding: aspect == .original
+            usesUniformPadding: aspect == .original,
+            captionsEnabled: FeatureSettings.shared.isEnabled(.captions)
         )
     }
 

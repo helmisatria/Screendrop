@@ -73,6 +73,7 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
         /// `reframe`.
         let fitContentAspect: CGFloat?
         let usesUniformPadding: Bool
+        let captionsEnabled: Bool
 
         init(
             screenURL: URL,
@@ -99,7 +100,8 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
             audioVolume: Double = 1,
             reframe: ReframeTrack? = nil,
             fitContentAspect: CGFloat? = nil,
-            usesUniformPadding: Bool = false
+            usesUniformPadding: Bool = false,
+            captionsEnabled: Bool = true
         ) {
             self.screenURL = screenURL
             self.cameraURL = cameraURL
@@ -110,9 +112,9 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
             self.showsPressEffects = showsPressEffects
             self.keystrokeTimeline = keystrokeTimeline
             self.keystrokePlacement = keystrokePlacement
-            self.subtitleTimeline = subtitleTimeline
+            self.subtitleTimeline = captionsEnabled ? subtitleTimeline : nil
             self.subtitleStyle = subtitleStyle
-            self.karaokeTimeline = karaokeTimeline
+            self.karaokeTimeline = captionsEnabled ? karaokeTimeline : nil
             self.canvasSize = canvasSize
             self.videoCropRect = videoCropRect
             self.clipTimeline = clipTimeline
@@ -126,6 +128,7 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
             self.reframe = reframe
             self.fitContentAspect = fitContentAspect
             self.usesUniformPadding = usesUniformPadding
+            self.captionsEnabled = captionsEnabled
         }
     }
 
