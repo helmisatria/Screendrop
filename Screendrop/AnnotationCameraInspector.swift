@@ -10,60 +10,52 @@ struct AnnotationCameraInspector: View {
     let onEditorAction: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: InspectorMetrics.groupSpacing) {
             VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
                 InspectorGroupLabel("Camera angle")
 
-                InspectorSlider(
-                    "Tilt X",
-                    value: binding(\.tiltXDegrees),
+                sliderPair(
+                    ("Tilt X", \.tiltXDegrees),
+                    ("Tilt Y", \.tiltYDegrees),
                     range: -45...45,
                     format: .degrees(signed: true)
                 )
 
-                InspectorSlider(
-                    "Tilt Y",
-                    value: binding(\.tiltYDegrees),
-                    range: -45...45,
-                    format: .degrees(signed: true)
-                )
-
-                InspectorSlider(
-                    "Roll",
-                    value: binding(\.rollDegrees),
-                    range: -45...45,
-                    format: .degrees(signed: true)
-                )
+                InspectorFieldPair {
+                    InspectorSlider(
+                        "Roll",
+                        value: binding(\.rollDegrees),
+                        range: -45...45,
+                        format: .degrees(signed: true)
+                    )
+                } trailing: {
+                    Color.clear.frame(height: InspectorMetrics.controlHeight)
+                }
             }
             .help("Orbit the camera around the card center, then roll the view")
 
             VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
                 InspectorGroupLabel("Framing")
 
-                InspectorSlider(
-                    "FOV",
-                    value: binding(\.fieldOfViewDegrees),
-                    range: 18...80,
-                    format: .degrees()
-                )
+                InspectorFieldPair {
+                    InspectorSlider(
+                        "FOV",
+                        value: binding(\.fieldOfViewDegrees),
+                        range: 18...80,
+                        format: .degrees()
+                    )
+                } trailing: {
+                    InspectorSlider(
+                        "Zoom",
+                        value: binding(\.zoom),
+                        range: 0.4...2.5,
+                        format: .magnification(fractionDigits: 2)
+                    )
+                }
 
-                InspectorSlider(
-                    "Zoom",
-                    value: binding(\.zoom),
-                    range: 0.4...2.5,
-                    format: .magnification(fractionDigits: 2)
-                )
-
-                InspectorSlider(
-                    "Pan X",
-                    value: binding(\.panX),
-                    range: -0.5...0.5,
-                    format: .percent(signed: true)
-                )
-
-                InspectorSlider(
-                    "Pan Y",
-                    value: binding(\.panY),
+                sliderPair(
+                    ("Pan X", \.panX),
+                    ("Pan Y", \.panY),
                     range: -0.5...0.5,
                     format: .percent(signed: true)
                 )
@@ -73,21 +65,38 @@ struct AnnotationCameraInspector: View {
             VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
                 InspectorGroupLabel("Card rotation")
 
-                InspectorSlider(
-                    "Rotate X",
-                    value: binding(\.rotationXDegrees),
-                    range: -60...60,
-                    format: .degrees(signed: true)
-                )
-
-                InspectorSlider(
-                    "Rotate Y",
-                    value: binding(\.rotationYDegrees),
+                sliderPair(
+                    ("Rotate X", \.rotationXDegrees),
+                    ("Rotate Y", \.rotationYDegrees),
                     range: -60...60,
                     format: .degrees(signed: true)
                 )
             }
             .help("Rotate the card around its own horizontal and vertical center axes")
+        }
+    }
+
+    /// X/Y companions share one row so the section reads as axis pairs.
+    private func sliderPair(
+        _ first: (title: String, keyPath: WritableKeyPath<AnnotationCameraSettings, CGFloat>),
+        _ second: (title: String, keyPath: WritableKeyPath<AnnotationCameraSettings, CGFloat>),
+        range: ClosedRange<CGFloat>,
+        format: InspectorValueFormat
+    ) -> some View {
+        InspectorFieldPair {
+            InspectorSlider(
+                first.title,
+                value: binding(first.keyPath),
+                range: range,
+                format: format
+            )
+        } trailing: {
+            InspectorSlider(
+                second.title,
+                value: binding(second.keyPath),
+                range: range,
+                format: format
+            )
         }
     }
 

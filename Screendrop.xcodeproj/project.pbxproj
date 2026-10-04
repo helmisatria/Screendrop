@@ -280,7 +280,7 @@
 				CODE_SIGN_ENTITLEMENTS = Screendrop/Screendrop.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = TB2S44TFQS;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -295,8 +295,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Screendrop/Vendor/DeepFilterNet/lib",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 0.31.4;
+				MARKETING_VERSION = 0.34.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fayazahmed.Screendrop;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -318,7 +322,7 @@
 				CODE_SIGN_ENTITLEMENTS = Screendrop/Screendrop.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = TB2S44TFQS;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -333,8 +337,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Screendrop/Vendor/DeepFilterNet/lib",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 0.31.4;
+				MARKETING_VERSION = 0.34.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fayazahmed.Screendrop;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -420,7 +428,7 @@
 				CODE_SIGN_ENTITLEMENTS = Screendrop/Screendrop.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = TB2S44TFQS;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -435,8 +443,12 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Screendrop/Vendor/DeepFilterNet/lib",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 0.31.4;
+				MARKETING_VERSION = 0.34.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fayazahmed.Screendrop.dev;
 				PRODUCT_NAME = "$(TARGET_NAME) Dev";
 				REGISTER_APP_GROUPS = YES;

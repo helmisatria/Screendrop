@@ -30,6 +30,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
     /// anchor is the time under the pointer, which the caller keeps pinned to
     /// its current screen position while the scale changes.
     let onZoom: (Double, TimeInterval) -> Void
+    /// Arrow-key nudge of the playhead by a signed number of seconds.
+    let onStep: (TimeInterval) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -43,7 +45,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onTrim: onTrim,
             onTrimPreview: onTrimPreview,
             onDisplayTimelineChange: onDisplayTimelineChange,
-            onZoom: onZoom
+            onZoom: onZoom,
+            onStep: onStep
         )
     }
 
@@ -63,7 +66,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onTrim: onTrim,
             onTrimPreview: onTrimPreview,
             onDisplayTimelineChange: onDisplayTimelineChange,
-            onZoom: onZoom
+            onZoom: onZoom,
+            onStep: onStep
         )
         nsView.skippedClipIDs = skippedClipIDs
         nsView.update(
@@ -88,6 +92,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
         private var onTrimPreview: (TimeInterval?) -> Void
         private var onDisplayTimelineChange: (RecordingClipTimeline?) -> Void
         private var onZoom: (Double, TimeInterval) -> Void
+        private var onStep: (TimeInterval) -> Void
 
         init(
             selectedClipID: Binding<UUID?>,
@@ -100,7 +105,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onTrim: @escaping (RecordingClipSegment) -> Void,
             onTrimPreview: @escaping (TimeInterval?) -> Void,
             onDisplayTimelineChange: @escaping (RecordingClipTimeline?) -> Void,
-            onZoom: @escaping (Double, TimeInterval) -> Void
+            onZoom: @escaping (Double, TimeInterval) -> Void,
+            onStep: @escaping (TimeInterval) -> Void
         ) {
             _selectedClipID = selectedClipID
             _playheadTime = playheadTime
@@ -113,6 +119,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             self.onTrimPreview = onTrimPreview
             self.onDisplayTimelineChange = onDisplayTimelineChange
             self.onZoom = onZoom
+            self.onStep = onStep
         }
 
         func updateCallbacks(
@@ -124,7 +131,8 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onTrim: @escaping (RecordingClipSegment) -> Void,
             onTrimPreview: @escaping (TimeInterval?) -> Void,
             onDisplayTimelineChange: @escaping (RecordingClipTimeline?) -> Void,
-            onZoom: @escaping (Double, TimeInterval) -> Void
+            onZoom: @escaping (Double, TimeInterval) -> Void,
+            onStep: @escaping (TimeInterval) -> Void
         ) {
             self.onSelect = onSelect
             self.onSeek = onSeek
@@ -135,6 +143,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             self.onTrimPreview = onTrimPreview
             self.onDisplayTimelineChange = onDisplayTimelineChange
             self.onZoom = onZoom
+            self.onStep = onStep
         }
 
         func connect(to view: RecordingClipTimelineControl) {
@@ -169,6 +178,9 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             view.zoomRequested = { [weak self] factor, anchorTime in
                 self?.onZoom(factor, anchorTime)
             }
+            view.stepRequested = { [weak self] seconds in
+                self?.onStep(seconds)
+            }
         }
     }
 }
@@ -184,6 +196,7 @@ final class RecordingClipTimelineControl: NSView {
     var trimPreviewSourceTimeDidChange: ((TimeInterval?) -> Void)?
     var displayTimelineDidChange: ((RecordingClipTimeline?) -> Void)?
     var zoomRequested: ((Double, TimeInterval) -> Void)?
+    var stepRequested: ((TimeInterval) -> Void)?
 
     private enum Edge: Equatable {
         case leading
@@ -229,6 +242,9 @@ final class RecordingClipTimelineControl: NSView {
         /// Scroll distance that equals one doubling of the timeline scale
         /// under ⌘-scroll.
         static let zoomScrollPointsPerDoubling: CGFloat = 220
+        /// Arrow-key steps: one frame at 30 fps, or a second with Shift.
+        static let frameStep: TimeInterval = 1.0 / 30.0
+        static let coarseStep: TimeInterval = 1
     }
 
     private var timeline = RecordingClipTimeline(segments: [])
@@ -464,6 +480,16 @@ final class RecordingClipTimelineControl: NSView {
 
         if modifiers.isEmpty, characters == "c", let hoverTime, hoveredClipID != nil {
             splitRequested?(hoverTime)
+            return
+        }
+        if modifiers.isEmpty, characters == "s" {
+            splitRequested?(playheadTime)
+            return
+        }
+        if modifiers.subtracting([.shift, .numericPad, .function]).isEmpty,
+           event.keyCode == 123 || event.keyCode == 124 {
+            let magnitude = modifiers.contains(.shift) ? Metrics.coarseStep : Metrics.frameStep
+            stepRequested?(event.keyCode == 123 ? -magnitude : magnitude)
             return
         }
         if modifiers.isEmpty, event.keyCode == 51 || event.keyCode == 117 {
@@ -999,8 +1025,17 @@ final class RecordingClipTimelineControl: NSView {
         )
     }
 
+    private func drawHoverSkimmer() {
+        guard let hoverTime, dragTarget == nil else { return }
+        let x = xPosition(for: hoverTime)
+        NSColor.controlAccentColor.withAlphaComponent(0.42).setFill()
+        CGRect(x: x - 0.5, y: timelineRect.minY, width: 1, height: timelineRect.height).fill()
+    }
+
+    /// Matches the zoom blocks and playhead so the timeline has a single
+    /// selection color.
     private var selectionColor: NSColor {
-        NSColor(srgbRed: 1, green: 212.0 / 255.0, blue: 0, alpha: 1)
+        .controlAccentColor
     }
 
     private func clipRadius(for rect: CGRect) -> CGFloat {

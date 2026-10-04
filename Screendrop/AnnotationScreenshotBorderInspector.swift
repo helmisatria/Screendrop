@@ -18,19 +18,21 @@ struct AnnotationScreenshotBorderInspector: View {
                 }
             }
 
-            InspectorSlider(
-                "Thickness",
-                value: binding(\.thickness),
-                range: 0.002...0.08,
-                format: .percent(fractionDigits: 1)
-            )
-
-            InspectorSlider(
-                "Opacity",
-                value: binding(\.opacity),
-                range: 0...1,
-                format: .percent()
-            )
+            InspectorFieldPair {
+                InspectorSlider(
+                    "Thickness",
+                    value: binding(\.thickness),
+                    range: 0.002...0.08,
+                    format: .percent(fractionDigits: 1)
+                )
+            } trailing: {
+                InspectorSlider(
+                    "Opacity",
+                    value: binding(\.opacity),
+                    range: 0...1,
+                    format: .percent()
+                )
+            }
         }
     }
 

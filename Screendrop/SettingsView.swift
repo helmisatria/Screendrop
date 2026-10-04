@@ -13,7 +13,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case overlay
     case cloud
     case transcription
-    case history
     case about
 
     var id: Self { self }
@@ -26,7 +25,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .overlay: "Overlay"
         case .transcription: "Transcription"
         case .cloud: "Cloud"
-        case .history: "History"
         case .about: "About"
         }
     }
@@ -39,7 +37,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .overlay: "square.on.square"
         case .transcription: "captions.bubble"
         case .cloud: "icloud.and.arrow.up"
-        case .history: "clock.arrow.trianglehead.counterclockwise.rotate.90"
         case .about: "info.circle"
         }
     }
@@ -99,6 +96,8 @@ struct SettingsView: View {
                     Image(systemName: "chevron.left")
                 }
                 .disabled(!canGoBack)
+                .help("Go Back")
+                .accessibilityLabel("Go Back")
 
                 Button {
                     goForward()
@@ -106,7 +105,13 @@ struct SettingsView: View {
                     Image(systemName: "chevron.right")
                 }
                 .disabled(!canGoForward)
+                .help("Go Forward")
+                .accessibilityLabel("Go Forward")
             }
+        }
+        .onAppear {
+            navigationHistory = [activeTab]
+            historyIndex = 0
         }
         .onChange(of: navigation.selectedTab) { _, _ in
             recordNavigation()
@@ -142,7 +147,7 @@ struct SettingsView: View {
     private func recordNavigation() {
         guard !isHistoryNavigation else { return }
         guard let tab = navigation.selectedTab else { return }
-        if navigationHistory.last == tab { return }
+        if navigationHistory[historyIndex] == tab { return }
         if historyIndex < navigationHistory.count - 1 {
             navigationHistory = Array(navigationHistory.prefix(historyIndex + 1))
         }
@@ -218,8 +223,6 @@ private struct SettingsDetailView: View {
                 TranscriptionSettingsPane()
             case .cloud:
                 CloudSettingsPane()
-            case .history:
-                SettingsHistoryPane()
             case .about:
                 SettingsAboutPane()
             }
@@ -231,6 +234,28 @@ private struct SettingsDetailView: View {
 
 // MARK: - Helpers
 
+/// The same label rhythm across settings panes, with descriptions allowed to
+/// wrap at the window's minimum width instead of being vertically truncated.
+struct SettingsControlLabel: View {
+    let title: String
+    let detail: String
+
+    init(_ title: String, detail: String) {
+        self.title = title
+        self.detail = detail
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 extension URL {
     var abbreviatedPath: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -240,5 +265,3 @@ extension URL {
         return path
     }
 }
-
-

@@ -280,12 +280,15 @@ nonisolated enum RecordingAudioGainMix {
     static func make(
         tracks: [AVAssetTrack],
         gainsDB: [Double],
-        trackEdits: [RecordingAudioTrackEdit] = []
+        trackEdits: [RecordingAudioTrackEdit] = [],
+        volume: Double = 1
     ) -> AVAudioMix? {
         guard !tracks.isEmpty else { return nil }
 
+        let masterVolume = RecordingAudioGain.normalized(volume)
+        let masterDB = masterVolume > 0 ? 20 * log10(masterVolume) : -Double.infinity
         let parameters = tracks.enumerated().compactMap { index, track -> AVAudioMixInputParameters? in
-            let gainDB = index < gainsDB.count ? gainsDB[index] : 0
+            let gainDB = (index < gainsDB.count ? gainsDB[index] : 0) + masterDB
             let edit = index < trackEdits.count ? trackEdits[index] : nil
             guard abs(gainDB) > 0.000_1 || edit != nil else { return nil }
 

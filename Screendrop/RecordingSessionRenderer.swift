@@ -40,6 +40,29 @@ enum RecordingSessionRenderer {
         }
         if let existing = session.freshFinalURL(matching: editDocument) { return existing }
 
+        let configuration = try await makeConfiguration(for: session)
+        let temporaryURL = try await RecordingStudioExporter().export(configuration) { progress in
+            onProgress?(progress)
+        }
+        do {
+            return try session.installFinalVideo(
+                movingFrom: temporaryURL,
+                renderedFrom: editDocument
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
+        }
+    }
+
+    /// The export a session's saved (or draft) Studio edits describe,
+    /// resolved without any editor UI.
+    static func makeConfiguration(
+        for session: RecordingSession
+    ) async throws -> RecordingStudioExporter.Configuration {
+        let manifest = session.loadCaptureManifest()
+        let pointerSynthesized = manifest?.pointerSynthesized == true
+        let editDocument = session.effectiveEditDocument()
         let asset = AVURLAsset(url: session.screenURL)
         let duration = try await asset.load(.duration).seconds
         guard duration.isFinite, duration > 0 else {
@@ -121,7 +144,7 @@ enum RecordingSessionRenderer {
             }
             : nil
         let fitContentAspect: CGFloat? =
-            aspect != .original && aspectMode == .fit && canvasSize.height > 0
+            (aspect == .original || aspectMode == .fit) && canvasSize.height > 0
                 ? canvasSize.width / canvasSize.height
                 : nil
         let audioDescriptors = (try? await RecordingAudioWaveformAnalyzer.descriptors(
@@ -148,7 +171,7 @@ enum RecordingSessionRenderer {
             session.directoryURL.appendingPathComponent($0)
         }
 
-        let configuration = RecordingStudioExporter.Configuration(
+        return RecordingStudioExporter.Configuration(
             screenURL: session.screenURL,
             cameraURL: session.hasCamera ? session.cameraURL : nil,
             cameraOffset: manifest?.cameraLeadIn ?? 0,
@@ -168,7 +191,11 @@ enum RecordingSessionRenderer {
                 ? KaraokeTimeline(cues: cues, words: words)
                 : nil,
             canvasSize: aspect == .original
-                ? canvasSize
+                ? RecordingStudioLayout.originalCanvasSize(
+                    sourceSize: canvasSize,
+                    style: style,
+                    contentCropRect: document?.normalizedVideoCropRect ?? RecordingVideoCropGeometry.unit
+                )
                 : aspect.canvasSize(for: canvasSize),
             videoCropRect: document?.normalizedVideoCropRect
                 ?? CGRect(x: 0, y: 0, width: 1, height: 1),
@@ -182,22 +209,11 @@ enum RecordingSessionRenderer {
             recordedAudioGainsDB: recordedAudioGains,
             audioTrackEdits: audioTrackEdits,
             audioTrackKinds: audioKinds,
+            audioVolume: document?.audioVolume ?? 1,
             reframe: reframe,
-            fitContentAspect: fitContentAspect
+            fitContentAspect: fitContentAspect,
+            usesUniformPadding: aspect == .original
         )
-
-        let temporaryURL = try await RecordingStudioExporter().export(configuration) { progress in
-            onProgress?(progress)
-        }
-        do {
-            return try session.installFinalVideo(
-                movingFrom: temporaryURL,
-                renderedFrom: editDocument
-            )
-        } catch {
-            try? FileManager.default.removeItem(at: temporaryURL)
-            throw error
-        }
     }
 
     static func presentFailure(_ error: Error) {

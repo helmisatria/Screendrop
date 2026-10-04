@@ -205,6 +205,12 @@ struct AnnotationBackgroundColor: Identifiable, Equatable, Hashable {
         self.alpha = alpha
     }
 
+    init(custom color: Color) {
+        let rgb = NSColor(color).usingColorSpace(.sRGB) ?? .black
+        self.init("custom", title: "Custom", red: rgb.redComponent,
+                  green: rgb.greenComponent, blue: rgb.blueComponent)
+    }
+
     var color: Color {
         Color(.sRGB, red: red, green: green, blue: blue, opacity: alpha)
     }
@@ -446,7 +452,8 @@ struct AnnotationWatermarkSettings: Equatable {
     var color: AnnotationWatermarkColor = .mercury
 
     var isVisible: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        isEnabled
+            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && opacity > 0
     }
 }

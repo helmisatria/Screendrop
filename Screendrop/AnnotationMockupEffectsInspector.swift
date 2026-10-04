@@ -10,7 +10,7 @@ struct AnnotationProgressiveBlurInspector: View {
     let onEditorAction: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: InspectorMetrics.groupSpacing) {
             VStack(alignment: .leading, spacing: InspectorMetrics.groupLabelSpacing) {
                 InspectorGroupLabel("Apply to")
 
@@ -28,7 +28,7 @@ struct AnnotationProgressiveBlurInspector: View {
                                 ? "photo"
                                 : "rectangle.stack"
                         )
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.inspectorSegment)
                         .labelStyle(.titleAndIcon)
                         .help(
                             edgeMode == .clipped
@@ -51,47 +51,53 @@ struct AnnotationProgressiveBlurInspector: View {
                     },
                     label: { mode in
                         Label(mode.title, systemImage: mode == .radial ? "scope" : "line.diagonal")
-                            .font(.system(size: 10.5, weight: .medium))
+                            .font(.inspectorSegment)
                             .labelStyle(.titleAndIcon)
                     }
                 )
             }
 
             VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
-                InspectorSlider(
-                    "Strength",
-                    value: binding(\.strength),
-                    range: 0...40,
-                    format: .integer
-                )
-
-                InspectorSlider(
-                    "Falloff",
-                    value: binding(\.falloff),
-                    range: 0...1,
-                    format: .decimal(fractionDigits: 2)
-                )
-
-                InspectorSlider(
-                    "Focus Size",
-                    value: binding(\.focusSize),
-                    range: 0...1,
-                    format: .percent()
-                )
-                .help(
-                    settings.edgeMode == .clipped
-                        ? "Choose the size of the sharp area inside the frame"
-                        : "Choose the size of the sharp area across the scene"
-                )
-
-                if settings.mode == .directional {
+                InspectorFieldPair {
                     InspectorSlider(
-                        "Direction",
-                        value: binding(\.directionDegrees),
-                        range: 0...180,
-                        format: .degrees()
+                        "Strength",
+                        value: binding(\.strength),
+                        range: 0...40,
+                        format: .integer
                     )
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                } trailing: {
+                    InspectorSlider(
+                        "Falloff",
+                        value: binding(\.falloff),
+                        range: 0...1,
+                        format: .decimal(fractionDigits: 2)
+                    )
+                }
+
+                InspectorFieldPair {
+                    InspectorSlider(
+                        "Focus",
+                        value: binding(\.focusSize),
+                        range: 0...1,
+                        format: .percent()
+                    )
+                    .help(
+                        settings.edgeMode == .clipped
+                            ? "Choose the size of the sharp area inside the frame"
+                            : "Choose the size of the sharp area across the scene"
+                    )
+                } trailing: {
+                    if settings.mode == .directional {
+                        InspectorSlider(
+                            "Angle",
+                            value: binding(\.directionDegrees),
+                            range: 0...180,
+                            format: .degrees()
+                        )
+                        .transition(.opacity)
+                    } else {
+                        Color.clear.frame(height: InspectorMetrics.controlHeight)
+                    }
                 }
             }
 

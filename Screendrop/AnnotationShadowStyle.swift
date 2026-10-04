@@ -83,12 +83,13 @@ struct AnnotationShadowLayer {
     var coreGraphicsBlur: CGFloat { radius * 2 }
 }
 
-/// Casts the shadow and nothing else: an opaque caster feeds the blur, then the
-/// card interior is punched back out. SwiftUI scales a shadow by the caster's
-/// own alpha, so the caster has to be solid for the alpha to mean what it says,
-/// and the knockout keeps that solid black from showing through translucent
-/// borders or screenshots with alpha - same result as the exporter's clipped
-/// fill.
+/// Casts the shadow and nothing else. The caster is drawn `shadowOnly`, so no
+/// solid black ever reaches the screen, then the card interior is cleared with
+/// the same shape. Knocking a solid black caster out left a dark antialiased
+/// fringe around rounded borders; clearing only the soft shadow can't.
+///
+/// The canvas overflows the card by the shadow's reach without taking part in
+/// layout, so the card never moves when the shadow changes.
 struct AnnotationCardShadowBackdrop: View {
     var cornerRadii: RectangleCornerRadii
     var size: CGSize
@@ -96,39 +97,40 @@ struct AnnotationCardShadowBackdrop: View {
     var style: AnnotationShadowStyle
 
     var body: some View {
-        let shape = UnevenRoundedRectangle(cornerRadii: cornerRadii, style: .continuous)
-        ZStack {
-            shape
-                .fill(Color.black)
-                .modifier(
-                    AnnotationCardShadow(strength: strength, style: style, size: size)
-                )
-            shape
-                .fill(Color.black)
-                .blendMode(.destinationOut)
-        }
-        .compositingGroup()
-        .frame(width: size.width, height: size.height)
-    }
-}
-
-/// Live-canvas counterpart to the exporter's shadow. Sized from the card itself
-/// so the preview keeps matching the render at any zoom level.
-struct AnnotationCardShadow: ViewModifier {
-    var strength: CGFloat
-    var style: AnnotationShadowStyle
-    var size: CGSize
-
-    func body(content: Content) -> some View {
         let layer = style.layer(
             strength: strength,
             referenceEdge: min(size.width, size.height)
         )
-        return content.shadow(
-            color: .black.opacity(Double(layer?.alpha ?? 0)),
-            radius: layer?.radius ?? 0,
-            x: 0,
-            y: layer?.yOffset ?? 0
-        )
+        Color.clear
+            .frame(width: size.width, height: size.height)
+            .overlay {
+                if let layer {
+                    shadowCanvas(layer)
+                }
+            }
+            .allowsHitTesting(false)
+    }
+
+    private func shadowCanvas(_ layer: AnnotationShadowLayer) -> some View {
+        let reach = ceil(layer.radius * 3 + abs(layer.yOffset)) + 2
+        let cardRect = CGRect(origin: CGPoint(x: reach, y: reach), size: size)
+        let path = UnevenRoundedRectangle(cornerRadii: cornerRadii, style: .continuous)
+            .path(in: cardRect)
+
+        return Canvas { context, _ in
+            context.drawLayer { shadowContext in
+                shadowContext.addFilter(.shadow(
+                    color: .black.opacity(Double(layer.alpha)),
+                    radius: layer.radius,
+                    x: 0,
+                    y: layer.yOffset,
+                    options: .shadowOnly
+                ))
+                shadowContext.fill(path, with: .color(.black))
+            }
+            context.blendMode = .destinationOut
+            context.fill(path, with: .color(.black))
+        }
+        .frame(width: size.width + reach * 2, height: size.height + reach * 2)
     }
 }

@@ -70,6 +70,7 @@ struct RecordingEditDocument: Codable, Equatable {
     /// Present only after a recorded track is edited independently. Missing
     /// tracks continue to follow the video cuts, preserving older projects.
     var audioTrackEdits: [RecordingAudioTrackEdit]?
+    var audioVolume: Double?
 
     private enum CodingKeys: String, CodingKey {
         case formatVersion
@@ -103,6 +104,7 @@ struct RecordingEditDocument: Codable, Equatable {
         case systemAudioGainDB
         case microphoneAudioGainDB
         case audioTrackEdits
+        case audioVolume
     }
 
     init(
@@ -129,7 +131,8 @@ struct RecordingEditDocument: Codable, Equatable {
         audioExportFormat: RecordingAudioFormat? = nil,
         systemAudioGainDB: Double? = nil,
         microphoneAudioGainDB: Double? = nil,
-        audioTrackEdits: [RecordingAudioTrackEdit]? = nil
+        audioTrackEdits: [RecordingAudioTrackEdit]? = nil,
+        audioVolume: Double? = nil
     ) {
         self.style = StoredRecordingStudioStyle(style)
         self.zoomEnabled = zoomEnabled
@@ -164,6 +167,7 @@ struct RecordingEditDocument: Codable, Equatable {
         self.systemAudioGainDB = systemAudioGainDB
         self.microphoneAudioGainDB = microphoneAudioGainDB
         self.audioTrackEdits = audioTrackEdits
+        self.audioVolume = audioVolume
     }
 
     var audioExportFormatValue: RecordingAudioFormat {
@@ -259,6 +263,7 @@ struct RecordingEditDocument: Codable, Equatable {
             [RecordingAudioTrackEdit].self,
             forKey: .audioTrackEdits
         )
+        audioVolume = try container.decodeIfPresent(Double.self, forKey: .audioVolume)
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -294,6 +299,7 @@ struct RecordingEditDocument: Codable, Equatable {
         try container.encodeIfPresent(systemAudioGainDB, forKey: .systemAudioGainDB)
         try container.encodeIfPresent(microphoneAudioGainDB, forKey: .microphoneAudioGainDB)
         try container.encodeIfPresent(audioTrackEdits, forKey: .audioTrackEdits)
+        try container.encodeIfPresent(audioVolume, forKey: .audioVolume)
     }
 }
 
@@ -311,6 +317,7 @@ struct StoredRecordingStudioStyle: Codable, Equatable {
     /// Optional so project files saved before cursor scaling decode to the
     /// current default.
     var cursorScale: Double?
+    var hidesCursor: Bool?
     var cameraIsVisible: Bool
     var cameraCenterX: Double
     var cameraCenterY: Double
@@ -332,6 +339,7 @@ struct StoredRecordingStudioStyle: Codable, Equatable {
         cornerRadius = Double(style.cornerRadius)
         shadow = Double(style.shadow)
         cursorScale = Double(style.cursorScale)
+        hidesCursor = style.hidesCursor ? true : nil
         cameraIsVisible = style.camera.isVisible
         cameraCenterX = Double(style.camera.center.x)
         cameraCenterY = Double(style.camera.center.y)
@@ -358,6 +366,7 @@ struct StoredRecordingStudioStyle: Codable, Equatable {
             cornerRadius: CGFloat(cornerRadius),
             shadow: CGFloat(shadow),
             cursorScale: CGFloat(cursorScale ?? RecordingStudioStyle.defaultCursorScale),
+            hidesCursor: hidesCursor ?? false,
             camera: RecordingCameraBubbleSettings(
                 isVisible: cameraIsVisible,
                 center: CGPoint(x: cameraCenterX, y: cameraCenterY),
@@ -385,6 +394,7 @@ struct RecordingStudioStyle: Equatable {
     var shadow: CGFloat = 0.45
     /// Synthetic cursor magnification (1 = natural size, up to 4).
     var cursorScale: CGFloat = RecordingStudioStyle.defaultCursorScale
+    var hidesCursor = false
     var camera = RecordingCameraBubbleSettings()
 }
 
@@ -443,6 +453,25 @@ enum RecordingStudioDefaults {
 /// Deterministic canvas layout shared by the preview and the exporter.
 /// All rects are in the given canvas space with a top-left origin.
 nonisolated struct RecordingStudioLayout: Sendable {
+    /// Original follows the visible source, then adds an equal border without
+    /// stretching the video. Padding remains a fraction of the canvas's short side.
+    static func originalCanvasSize(
+        sourceSize: CGSize,
+        style: RecordingStudioStyle,
+        contentCropRect: CGRect
+    ) -> CGSize {
+        let crop = RecordingVideoCropGeometry.isCropped(contentCropRect)
+            ? RecordingVideoCropGeometry.normalized(contentCropRect)
+            : RecordingVideoCropGeometry.unit
+        let visibleSize = CGSize(
+            width: sourceSize.width * crop.width,
+            height: sourceSize.height * crop.height
+        )
+        let padding = min(max(style.padding, 0), 0.475)
+        let inset = min(visibleSize.width, visibleSize.height) * padding / (1 - 2 * padding)
+        return CGSize(width: visibleSize.width + 2 * inset, height: visibleSize.height + 2 * inset)
+    }
+
     let canvasSize: CGSize
     let cardRect: CGRect
     let cardCornerRadius: CGFloat
@@ -463,20 +492,31 @@ nonisolated struct RecordingStudioLayout: Sendable {
         case fit
     }
 
+    /// Gap kept between the camera bubble and the canvas edge.
+    static func bubbleMargin(forMinDimension minDimension: CGFloat) -> CGFloat {
+        (minDimension * 0.03).rounded()
+    }
+
     static func make(
         canvasSize: CGSize,
         style: RecordingStudioStyle,
         includeBubble: Bool,
+        usesUniformPadding: Bool = false,
         contentAspect: CGFloat? = nil,
         contentMode: ContentMode = .fill,
         contentCropRect: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)
     ) -> RecordingStudioLayout {
         let minDimension = min(canvasSize.width, canvasSize.height)
-        let inset = (style.padding * minDimension).rounded()
-        // Shrink the card uniformly so it keeps the video's aspect ratio -
-        // insetting both axes by the same amount would stretch the recording.
+        let inset = usesUniformPadding
+            ? min(max(style.padding, 0), 0.475) * minDimension
+            : (style.padding * minDimension).rounded()
+        // Fixed presets retain their existing scale-based layout. Original's
+        // canvas already includes the border, so inset each edge equally.
         let cardScale = max(0.05, 1 - 2 * inset / minDimension)
-        var cardSize = CGSize(
+        var cardSize = usesUniformPadding ? CGSize(
+            width: canvasSize.width - 2 * inset,
+            height: canvasSize.height - 2 * inset
+        ) : CGSize(
             width: (canvasSize.width * cardScale).rounded(),
             height: (canvasSize.height * cardScale).rounded()
         )
@@ -497,9 +537,8 @@ nonisolated struct RecordingStudioLayout: Sendable {
         } else {
             nil
         }
-        if let cardAspect, cardAspect > 0 {
-            // A manually cropped recording reshapes only the video card;
-            // the surrounding canvas and its background keep their size.
+        if let cardAspect, cardAspect > 0, !usesUniformPadding {
+            // Fixed presets keep their canvas; Original already follows the crop.
             let fitHeight = min(cardSize.height, cardSize.width / cardAspect)
             cardSize = CGSize(
                 width: (cardAspect * fitHeight).rounded(),
@@ -507,8 +546,10 @@ nonisolated struct RecordingStudioLayout: Sendable {
             )
         }
         let cardRect = CGRect(
-            x: ((canvasSize.width - cardSize.width) / 2).rounded(),
-            y: ((canvasSize.height - cardSize.height) / 2).rounded(),
+            x: usesUniformPadding ? (canvasSize.width - cardSize.width) / 2
+                : ((canvasSize.width - cardSize.width) / 2).rounded(),
+            y: usesUniformPadding ? (canvasSize.height - cardSize.height) / 2
+                : ((canvasSize.height - cardSize.height) / 2).rounded(),
             width: cardSize.width,
             height: cardSize.height
         )
@@ -522,8 +563,13 @@ nonisolated struct RecordingStudioLayout: Sendable {
                 x: style.camera.center.x * canvasSize.width,
                 y: style.camera.center.y * canvasSize.height
             )
-            center.x = min(max(center.x, diameter / 2), canvasSize.width - diameter / 2)
-            center.y = min(max(center.y, diameter / 2), canvasSize.height - diameter / 2)
+            // Keep a little air between the bubble and the canvas edge so it
+            // never sits jammed into a corner.
+            let margin = Self.bubbleMargin(forMinDimension: minDimension)
+            let halfX = min(diameter / 2 + margin, canvasSize.width / 2)
+            let halfY = min(diameter / 2 + margin, canvasSize.height / 2)
+            center.x = min(max(center.x, halfX), canvasSize.width - halfX)
+            center.y = min(max(center.y, halfY), canvasSize.height - halfY)
             bubbleRect = CGRect(
                 x: center.x - diameter / 2,
                 y: center.y - diameter / 2,
@@ -538,10 +584,21 @@ nonisolated struct RecordingStudioLayout: Sendable {
             // Draw the full source behind the card at the scale where the
             // selected source rectangle fills it exactly. The viewport anchor
             // then positions that rectangle without touching other layers.
-            contentFillSize = CGSize(
-                width: cardRect.width / crop.width,
-                height: cardRect.height / crop.height
-            )
+            if usesUniformPadding {
+                // Even-pixel export rounding can slightly change the canvas
+                // aspect. Fill that fraction of a pixel instead of exposing
+                // wallpaper at zero padding or stretching the source.
+                let fillHeight = max(
+                    cardRect.height / crop.height,
+                    cardRect.width / (crop.width * sourceAspect)
+                )
+                contentFillSize = CGSize(width: sourceAspect * fillHeight, height: fillHeight)
+            } else {
+                contentFillSize = CGSize(
+                    width: cardRect.width / crop.width,
+                    height: cardRect.height / crop.height
+                )
+            }
         } else if let contentAspect, contentAspect > 0, cardRect.height > 0 {
             let fillHeight = max(cardRect.height, cardRect.width / contentAspect)
             contentFillSize = CGSize(

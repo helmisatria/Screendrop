@@ -27,6 +27,110 @@
     -->
 
     <item>
+      <title>Version 0.34.0</title>
+      <sparkle:version>32</sparkle:version>
+      <sparkle:shortVersionString>0.34.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.4</sparkle:minimumSystemVersion>
+      <pubDate>Thu, 01 Oct 2026 17:25:13 +0000</pubDate>
+      <description><![CDATA[
+        <h2>What's New in 0.34.0</h2>
+        <ul>
+          <li>Faster video exports: every frame now renders on the GPU, the CPU and GPU work on consecutive frames in parallel, HEVC is tuned for encoding speed, and exports no longer run on the main thread, so Studio stays responsive while you export. In our testing, a 50-second camera recording exported up to 40% faster. Actual speedups depend on your Mac, recording, and export settings.</li>
+          <li>An interactive Studio canvas that matches the export: click to play or pause, see the frame you're skimming, drag a Fixed zoom's target right on the paused canvas, and move the camera bubble with snapping guides. The bubble now always stays clear of the canvas edge.</li>
+          <li>A reworked Studio timeline: grouped transport controls, a single current/total time readout, and new shortcuts: ⌘B or S to split at the playhead, arrow keys to step a frame, and Shift-arrow to step a second. Reset Clips now asks for confirmation.</li>
+          <li>A cleaner Studio inspector, consistent with the screenshot editor: timeline selections pinned to the top, collapsed sections with summaries, remembered expanded sections, clip speed presets, and the audio format chosen at export time.</li>
+          <li>A tidier Studio toolbar: a prominent Export button, an icon-only Save, and untitled recordings named by when they were recorded, with length and resolution shown underneath.</li>
+          <li>A refreshed screenshot editor inspector: on/off switches for Border and Watermark, summaries on collapsed sections, and remembered expanded sections.</li>
+          <li>A refined Library window on macOS 27, with a rounded content area beside the sidebar.</li>
+          <li>Fixed a thin dark outline around the corners of rounded screenshot borders, in both the editor and exported images.</li>
+        </ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/fayazara/screendrop/releases/download/v0.34.0/Screendrop.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="LEGdoKNimjv/AvJ0hVUaU5Te33t86AVK8YnVIL4X9bJVXG4+Oy+lhqZvpdEchSqFhdqIoJWs5BqSsG+wqe/RAg=="
+        length="7393675"
+      />
+    </item>
+
+    <item>
+      <title>Version 0.33.0</title>
+      <sparkle:version>31</sparkle:version>
+      <sparkle:shortVersionString>0.33.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.4</sparkle:minimumSystemVersion>
+      <pubDate>Tue, 22 Sep 2026 08:52:44 +0000</pubDate>
+      <description><![CDATA[
+        <h2>What's New in 0.33.0</h2>
+        <ul>
+          <li>Choose any background color for screenshots and recordings using the new color-picker tile.</li>
+          <li>Adjust recording audio volume from mute to 200%, with changes saved to the project and applied to playback, video exports, and audio-only exports.</li>
+          <li>Show or hide the mouse pointer from the Cursor section in Recording Studio. Hiding the pointer also hides click highlights in preview and export for recordings with a separate cursor track.</li>
+        </ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/fayazara/screendrop/releases/download/v0.33.0/Screendrop.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="inioB8r7vqemMY2V30/8uQNXv9F/KF8ykx+5bJ8EiYgWs5kWdcGfqcEMSYXhUdy7d9/XFOsq4eFPUA0yY4K1AA=="
+        length="7275587"
+      />
+    </item>
+
+    <item>
+      <title>Version 0.32.1</title>
+      <sparkle:version>30</sparkle:version>
+      <sparkle:shortVersionString>0.32.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.4</sparkle:minimumSystemVersion>
+      <pubDate>Wed, 16 Sep 2026 06:50:37 +0000</pubDate>
+      <description><![CDATA[
+        <h2>What's New in 0.32.1</h2>
+        <ul>
+          <li>Fixed uneven padding in the recording editor when using Original aspect ratio.</li>
+          <li>Original now fits the cropped video, removing wallpaper strips at 0% padding.</li>
+          <li>Preview and export use matching padding, and older cached exports refresh with the corrected layout.</li>
+        </ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/fayazara/screendrop/releases/download/v0.32.1/Screendrop.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="D4NXiviKKXVp1jvtDXNST+a/eVeRdJcaIAqKFAEgbgcye1xf2P/0AxIEEocpX1kbUYF1l5bgv+B7q0LNbNpABw=="
+        length="7257466"
+      />
+    </item>
+
+    <item>
+      <title>Version 0.32.0</title>
+      <sparkle:version>29</sparkle:version>
+      <sparkle:shortVersionString>0.32.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.4</sparkle:minimumSystemVersion>
+      <pubDate>Sun, 13 Sep 2026 06:41:14 +0000</pubDate>
+      <description><![CDATA[
+        <h2>What's New in 0.32.0</h2>
+        <ul>
+          <li>Meet the new Media Library: screenshots, videos, and editable recording projects now live in one native macOS window. Browse in grid or list view, search and sort captures, inspect file details, and edit, export, or share from one place.</li>
+          <li>Up to 3× faster video exports with Metal-accelerated rendering. Studio moves demanding motion-blur work to the GPU and reuses unchanged screen frames, with a Core Graphics fallback when needed. Actual speedups depend on your Mac, recording, and export settings.</li>
+          <li>More control over video exports: choose 30 or 60 fps and turn motion blur on or off independently. Your choices are remembered and used consistently for Export, Share, and Library rendering.</li>
+          <li>Smoother annotation navigation: rewritten canvas zoom and pan, pointer-anchored pinch zoom, predictable zoom-out speed, proper canvas boundaries, and a new maximum zoom of 1000%.</li>
+          <li>A visible reminder before recording: when Capture Visibility is enabled, a compact banner below the recorder warns that Screendrop windows will be captured and lets you switch it off immediately.</li>
+          <li>Lower editor memory use: bounded image previews, more efficient rendering resources, and better cleanup when editor windows close. Full-resolution source images and editable screenshot data are preserved.</li>
+          <li>Safer saving: screenshot commits coordinate Save, Done, and Upload, preserve existing files during replacement, and restore them if a save fails. Editors stay open when saving fails, and newer edits are no longer incorrectly marked as saved.</li>
+          <li>Better save recovery: screenshot save failures offer Retry or another destination, and opening a save dialog keeps the preview available even if you cancel. Uploading an untouched screenshot now works too.</li>
+          <li>Countdowns you can cancel: cancel the countdown or close the recorder to stop a pending recording. Source selection is disabled while the countdown is running to prevent duplicate starts.</li>
+          <li>Clearer recording setup: source-loading progress and errors now have visible feedback, a retry action, and a link to screen recording permissions when needed.</li>
+          <li>More reliable shortcuts and Cloud setup: rejected shortcut changes keep the previous working binding and explain the error. Automatic upload settings guide you to Cloud setup when configuration is missing.</li>
+          <li>Cleaner handoffs and more consistent UI: recording preview cards dismiss after successful editor, save, export, and share handoffs; failed or cancelled actions remain available for retry. Library cells, inspector actions, settings labels, and editor controls have been polished throughout.</li>
+          <li>Corrected shadow falloff in perspective screenshot layouts.</li>
+          <li>Screendrop is back under the CC0 1.0 Universal license.</li>
+        </ul>
+      ]]></description>
+      <enclosure
+        url="https://github.com/fayazara/screendrop/releases/download/v0.32.0/Screendrop.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="hbq3JKlK+8otp1gQghXgBzwb97imAosV9fzXKFul+yB4XiSy/Uwp/oU88O8Dnu/b0m3RXN8FYcKFtr0G8fIqCA=="
+        length="7124542"
+      />
+    </item>
+
+    <item>
       <title>Version 0.31.4</title>
       <sparkle:version>28</sparkle:version>
       <sparkle:shortVersionString>0.31.4</sparkle:shortVersionString>

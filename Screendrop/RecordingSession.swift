@@ -243,17 +243,22 @@ nonisolated struct RecordingSession: Sendable, Equatable {
 
     // MARK: - Render stamp
 
+    private struct RenderStamp: Codable {
+        var layoutVersion = 1
+        var document: RecordingEditDocument?
+    }
+
     func loadRenderStamp() -> RecordingEditDocument? {
         guard let data = try? Data(contentsOf: renderStampURL) else { return nil }
+        if let stamp = try? CaptureManifest.decoder.decode(RenderStamp.self, from: data) {
+            return stamp.document
+        }
+        // Older builds stored the edit document directly.
         return try? CaptureManifest.decoder.decode(RecordingEditDocument.self, from: data)
     }
 
     func writeRenderStamp(_ document: RecordingEditDocument?) {
-        guard let document else {
-            try? FileManager.default.removeItem(at: renderStampURL)
-            return
-        }
-        guard let data = try? CaptureManifest.encoder.encode(document) else { return }
+        guard let data = try? CaptureManifest.encoder.encode(RenderStamp(document: document)) else { return }
         try? data.write(to: renderStampURL, options: .atomic)
     }
 
@@ -263,6 +268,13 @@ nonisolated struct RecordingSession: Sendable, Equatable {
     func freshFinalURL(matching document: RecordingEditDocument?) -> URL? {
         guard let existing = existingFinalURL else { return nil }
         let stamp = loadRenderStamp()
+        // Original's geometry changed even when no edit settings changed.
+        // This also versions default renders that have no edit document yet.
+        if document?.exportAspectPreset ?? .original == .original {
+            guard let data = try? Data(contentsOf: renderStampURL),
+                  let stamp = try? CaptureManifest.decoder.decode(RenderStamp.self, from: data),
+                  stamp.layoutVersion == 1 else { return nil }
+        }
         if stamp == document { return existing }
         // Swapping only the container leaves every encoded sample intact, so
         // the render survives and export converts it on the way out.

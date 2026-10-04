@@ -25,6 +25,8 @@ struct ScreenshotHistoryItem: Identifiable, Codable, Equatable {
     /// Absolute path to the non-destructive recording package, when this video
     /// belongs to the new Studio workflow. Older video items remain bare files.
     var recordingSessionPath: String?
+    /// A Library title, kept separate from the file name and editable sidecars.
+    var displayName: String?
 
     var recordingSession: RecordingSession? {
         guard let recordingSessionPath else { return nil }
@@ -60,6 +62,7 @@ struct ScreenshotHistoryItem: Identifiable, Codable, Equatable {
         cloudURL = try container.decodeIfPresent(String.self, forKey: .cloudURL)
         hasEdits = try container.decodeIfPresent(Bool.self, forKey: .hasEdits) ?? false
         recordingSessionPath = try container.decodeIfPresent(String.self, forKey: .recordingSessionPath)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
     }
 
     init(
@@ -73,7 +76,8 @@ struct ScreenshotHistoryItem: Identifiable, Codable, Equatable {
         duration: Double? = nil,
         cloudURL: String? = nil,
         hasEdits: Bool = false,
-        recordingSessionPath: String? = nil
+        recordingSessionPath: String? = nil,
+        displayName: String? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -86,6 +90,7 @@ struct ScreenshotHistoryItem: Identifiable, Codable, Equatable {
         self.cloudURL = cloudURL
         self.hasEdits = hasEdits
         self.recordingSessionPath = recordingSessionPath
+        self.displayName = displayName
     }
 }
 
@@ -276,96 +281,64 @@ final class ScreenshotHistoryStore {
         baseURL: URL,
         renderedURL: URL,
         document: AnnotationDocument
-    ) -> URL {
+    ) throws -> URL {
         guard isHistoryURL(displayURL) else {
-            return importScreenshot(from: renderedURL)
+            let imported = importScreenshot(from: baseURL)
+            guard isHistoryURL(imported) else { throw CocoaError(.fileWriteUnknown) }
+            return try commitAnnotations(displayURL: imported, baseURL: baseURL,
+                                         renderedURL: renderedURL, document: document)
         }
-
-        do {
-            let baseDestination = Self.baseImageURL(for: displayURL)
-
-            // Keep the canonical base image (`<stem>.base.<ext>`) in sync with
-            // the image the annotations actually render on top of.
-            if baseURL.standardizedFileURL != baseDestination.standardizedFileURL {
-                if baseURL.standardizedFileURL == displayURL.standardizedFileURL {
-                    // First edit: snapshot the current (untouched) display image
-                    // as the base, lazily.
-                    if !FileManager.default.fileExists(atPath: baseDestination.path),
-                       FileManager.default.fileExists(atPath: displayURL.path) {
-                        try FileManager.default.copyItem(at: displayURL, to: baseDestination)
-                    }
-                } else {
-                    // The base was replaced this session (e.g. by a crop). Persist
-                    // the new base so re-opened edits render from the cropped pixels.
-                    if FileManager.default.fileExists(atPath: baseDestination.path) {
-                        try FileManager.default.removeItem(at: baseDestination)
-                    }
-                    try FileManager.default.copyItem(at: baseURL, to: baseDestination)
-                }
+        let baseDestination = Self.baseImageURL(for: displayURL)
+        var replacements: [(source: URL, destination: URL)] = []
+        if baseURL.standardizedFileURL != baseDestination.standardizedFileURL {
+            if baseURL.standardizedFileURL != displayURL.standardizedFileURL
+                || !FileManager.default.fileExists(atPath: baseDestination.path) {
+                replacements.append((baseURL, baseDestination))
             }
-
-            // Overwrite the display image with the rendered composite.
-            if FileManager.default.fileExists(atPath: displayURL.path) {
-                try FileManager.default.removeItem(at: displayURL)
-            }
-            try FileManager.default.copyItem(at: renderedURL, to: displayURL)
-
-            // Persist the editable sidecar document.
-            var document = document
-            document.baseImageFileName = baseDestination.lastPathComponent
-            let data = try JSONEncoder().encode(document)
-            try data.write(to: Self.editDocumentURL(for: displayURL), options: .atomic)
-
-            if let index = items.firstIndex(where: { $0.fileName == displayURL.lastPathComponent }) {
-                let imageSize = ScreenshotImageLoader.imageSize(at: displayURL) ?? .zero
-                items[index].updatedAt = Date()
-                items[index].pixelWidth = Int(imageSize.width)
-                items[index].pixelHeight = Int(imageSize.height)
-                items[index].hasEdits = true
-                saveMetadata()
-            }
-
-            return displayURL
-        } catch {
-            print("Failed to commit annotations: \(error)")
-            return renderedURL
         }
+        var document = document
+        document.baseImageFileName = baseDestination.lastPathComponent
+        let documentData = try JSONEncoder().encode(document)
+        let temporaryDocument = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try documentData.write(to: temporaryDocument, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: temporaryDocument) }
+        replacements.append((renderedURL, displayURL))
+        replacements.append((temporaryDocument, Self.editDocumentURL(for: displayURL)))
+        try ScreenshotEditFileTransaction.apply(replacements: replacements)
+
+        if let index = items.firstIndex(where: { $0.fileName == displayURL.lastPathComponent }) {
+            let imageSize = ScreenshotImageLoader.imageSize(at: displayURL) ?? .zero
+            items[index].updatedAt = Date()
+            items[index].pixelWidth = Int(imageSize.width)
+            items[index].pixelHeight = Int(imageSize.height)
+            items[index].hasEdits = true
+            saveMetadata()
+        }
+        return displayURL
     }
 
-    /// Restores the untouched base image into the display slot and removes the
-    /// editable sidecar. Used when every annotation has been cleared.
+    /// Restores the base and removes the editable files as one recoverable save.
     @discardableResult
-    func removeAnnotations(displayURL: URL) -> URL {
+    func removeAnnotations(displayURL: URL) throws -> URL {
         guard isHistoryURL(displayURL) else { return displayURL }
-
         let baseDestination = Self.baseImageURL(for: displayURL)
         let documentURL = Self.editDocumentURL(for: displayURL)
-
-        do {
-            if FileManager.default.fileExists(atPath: baseDestination.path) {
-                if FileManager.default.fileExists(atPath: displayURL.path) {
-                    try FileManager.default.removeItem(at: displayURL)
-                }
-                try FileManager.default.copyItem(at: baseDestination, to: displayURL)
-                try FileManager.default.removeItem(at: baseDestination)
-            }
-
-            if FileManager.default.fileExists(atPath: documentURL.path) {
-                try FileManager.default.removeItem(at: documentURL)
-            }
-
-            if let index = items.firstIndex(where: { $0.fileName == displayURL.lastPathComponent }) {
-                let imageSize = ScreenshotImageLoader.imageSize(at: displayURL) ?? .zero
-                items[index].updatedAt = Date()
-                items[index].pixelWidth = Int(imageSize.width)
-                items[index].pixelHeight = Int(imageSize.height)
-                items[index].hasEdits = false
-                saveMetadata()
-            }
-        } catch {
-            print("Failed to remove annotations: \(error)")
+        // Missing base pixels are a failed restore, not a successful clear.
+        guard FileManager.default.fileExists(atPath: baseDestination.path) else {
+            throw CocoaError(.fileReadNoSuchFile)
         }
-
+        try ScreenshotEditFileTransaction.apply(
+            replacements: [(baseDestination, displayURL)],
+            removing: [baseDestination, documentURL]
+        )
+        if let index = items.firstIndex(where: { $0.fileName == displayURL.lastPathComponent }) {
+            let imageSize = ScreenshotImageLoader.imageSize(at: displayURL) ?? .zero
+            items[index].updatedAt = Date()
+            items[index].pixelWidth = Int(imageSize.width)
+            items[index].pixelHeight = Int(imageSize.height)
+            items[index].hasEdits = false
+            saveMetadata()
+        }
         return displayURL
     }
 
@@ -461,6 +434,28 @@ final class ScreenshotHistoryStore {
 
     func reload() {
         load()
+    }
+
+    func rename(id: UUID, to name: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        items[index].displayName = trimmed.isEmpty ? nil : trimmed
+        items[index].updatedAt = Date()
+        saveMetadata()
+    }
+
+    /// Called only after Library has successfully moved the owned files to Trash.
+    func removeTrashedItems(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        items.removeAll { ids.contains($0.id) }
+        saveMetadata()
+    }
+
+    func setLibraryCloudURL(id: UUID, cloudURL: String?) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].cloudURL = cloudURL
+        items[index].updatedAt = Date()
+        saveMetadata()
     }
 
     private func load() {

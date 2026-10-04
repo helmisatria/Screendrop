@@ -87,6 +87,7 @@ nonisolated final class RecordingAudioExporter: @unchecked Sendable {
         let audioTrackKinds: [RecordingAudioTrackKind]
         let format: RecordingAudioFormat
         var replacementSlices: [RecordingReplacementAudioSlice]? = nil
+        var volume: Double = 1
     }
 
     enum ExportError: LocalizedError {
@@ -146,8 +147,11 @@ nonisolated final class RecordingAudioExporter: @unchecked Sendable {
             output.audioMix = RecordingAudioGainMix.make(
                 tracks: tracks,
                 gainsDB: configuration.recordedAudioGainsDB,
-                trackEdits: configuration.audioTrackEdits
+                trackEdits: configuration.audioTrackEdits,
+                volume: configuration.volume
             )
+        } else {
+            output.audioMix = RecordingAudioGain.makeMix(tracks: tracks, volume: configuration.volume)
         }
         output.alwaysCopiesSampleData = false
         reader.add(output)

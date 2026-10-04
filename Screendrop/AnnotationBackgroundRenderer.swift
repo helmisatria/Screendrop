@@ -9,15 +9,9 @@ import ImageIO
 import SwiftUI
 
 nonisolated enum AnnotationBackgroundRenderer {
-    /// Decoded wallpapers are reused across settled previews and exports so
-    /// compose doesn't pay a disk read + full decode per render. NSCache is
-    /// thread-safe and evicts under memory pressure.
-    nonisolated(unsafe) private static let wallpaperCache: NSCache<NSString, WallpaperCacheBox> = {
-        let cache = NSCache<NSString, WallpaperCacheBox>()
-        cache.countLimit = 4
-        cache.totalCostLimit = 192 * 1024 * 1024
-        return cache
-    }()
+    private static let wallpaperCache = BoundedCGImageCache(byteLimit: 64 * 1024 * 1024, countLimit: 4)
+
+    static func beginWallpaperUse() -> BoundedCGImageCache.Lease { wallpaperCache.beginUse() }
 
     typealias ForegroundOverlay = (
         _ context: CGContext,
@@ -214,7 +208,6 @@ nonisolated enum AnnotationBackgroundRenderer {
             if castsShadow {
                 drawShadow(
                     path: geometry.cardPath,
-                    knockoutPath: geometry.cardShadowKnockoutPath,
                     strength: settings.shadow,
                     style: settings.shadowStyle,
                     context: context
@@ -230,7 +223,6 @@ nonisolated enum AnnotationBackgroundRenderer {
         } else if castsShadow {
             drawShadow(
                 path: geometry.imagePath,
-                knockoutPath: geometry.imageShadowKnockoutPath,
                 strength: settings.shadow,
                 style: settings.shadowStyle,
                 context: context
@@ -359,6 +351,11 @@ nonisolated enum AnnotationBackgroundRenderer {
     }
 
     private static func loadCGImageForAspectFill(at url: URL, fillSize: CGSize) -> CGImage? {
+        // An export can outlive its editor; keep its current decode usable
+        // until this call completes, even when the last window has closed.
+        let lease = wallpaperCache.beginUse()
+        defer { withExtendedLifetime(lease) {} }
+        let generation = wallpaperCache.generation
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [
             kCGImageSourceShouldCache: false
         ] as CFDictionary) else {
@@ -383,9 +380,9 @@ nonisolated enum AnnotationBackgroundRenderer {
         let cacheKey = AnnotationWallpaperPreviewCache.cacheID(
             for: url,
             maxPixelSize: bucketedMaxPixelSize
-        ) as NSString
-        if let cached = wallpaperCache.object(forKey: cacheKey) {
-            return cached.image
+        )
+        if let cached = wallpaperCache.image(for: cacheKey) {
+            return cached
         }
 
         let options: [CFString: Any] = [
@@ -398,11 +395,7 @@ nonisolated enum AnnotationBackgroundRenderer {
             return nil
         }
 
-        wallpaperCache.setObject(
-            WallpaperCacheBox(image),
-            forKey: cacheKey,
-            cost: image.width * image.height * 4
-        )
+        wallpaperCache.insert(image, for: cacheKey, generation: generation)
         return image
     }
 
@@ -439,12 +432,14 @@ nonisolated enum AnnotationBackgroundRenderer {
         context.stroke(rect.insetBy(dx: 8, dy: 8))
     }
 
-    /// Paints the shadow without laying any ink inside the card: the fill is
-    /// clipped away so only the spill survives. That keeps translucent borders
-    /// and screenshots with alpha from being backed by black.
+    /// Paints the shadow without laying any ink: the caster is parked just
+    /// outside the clip and the shadow offset carries its spill back under the
+    /// card, so no solid black ever reaches the bitmap. The card interior is
+    /// then clipped away with its exact path. A clipped black caster left a
+    /// dark antialiased fringe around rounded borders; clipping only the soft
+    /// shadow leaves nothing darker than the shadow itself.
     private static func drawShadow(
         path: CGPath,
-        knockoutPath: CGPath,
         strength: CGFloat,
         style: AnnotationShadowStyle,
         context: CGContext
@@ -459,19 +454,29 @@ nonisolated enum AnnotationBackgroundRenderer {
 
         context.saveGState()
 
+        let clipBounds = context.boundingBoxOfClipPath
         let exterior = CGMutablePath()
-        exterior.addRect(context.boundingBoxOfClipPath)
-        exterior.addPath(knockoutPath)
+        exterior.addRect(clipBounds)
+        exterior.addPath(path)
         context.addPath(exterior)
         context.clip(using: .evenOdd)
 
+        // Shadow offsets live in device space while paths follow the CTM. The
+        // export contexts only ever translate, so both use the same units.
+        let casterShift = ceil(rect.maxX - clipBounds.minX) + 1
+        var parked = CGAffineTransform(translationX: -casterShift, y: 0)
+        guard let caster = path.copy(using: &parked) else {
+            context.restoreGState()
+            return
+        }
+
         context.setShadow(
-            offset: CGSize(width: 0, height: -layer.yOffset),
+            offset: CGSize(width: casterShift, height: -layer.yOffset),
             blur: layer.coreGraphicsBlur,
             color: NSColor.black.withAlphaComponent(layer.alpha).cgColor
         )
         context.setFillColor(NSColor.black.cgColor)
-        context.addPath(path)
+        context.addPath(caster)
         context.fillPath()
 
         context.restoreGState()
@@ -510,13 +515,5 @@ nonisolated enum AnnotationBackgroundRenderer {
             x: rect.minX + unitPoint.x * rect.width,
             y: rect.minY + (1 - unitPoint.y) * rect.height
         )
-    }
-}
-
-nonisolated private final class WallpaperCacheBox {
-    let image: CGImage
-
-    init(_ image: CGImage) {
-        self.image = image
     }
 }

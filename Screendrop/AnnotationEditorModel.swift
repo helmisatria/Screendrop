@@ -56,20 +56,8 @@ final class AnnotationEditorModel {
     var cropAspect: CropAspectRatio = .freeform
 
     // MARK: Zoom & pan
-    /// When `true` the canvas is scaled to fit the available viewport (default).
-    var zoomToFit = true
-    /// Absolute display scale used when `zoomToFit` is false.
-    var manualZoomScale: CGFloat = 1
-    /// Pan offset (in view points) applied when the zoomed content overflows the viewport.
-    var panOffset: CGSize = .zero
-    /// The live viewport size, published by `AnnotationCanvas`.
-    var viewportSize: CGSize = .zero
-    /// The backing scale factor of the canvas, published by `AnnotationCanvas`.
-    var displayScale: CGFloat = 2
-
-    static let minZoomPercent = 10
-    static let maxZoomPercent = 400
-
+    /// The rendered camera and active gesture are committed as one value.
+    var canvasViewport = AnnotationCanvasViewport()
     /// While cropping, the image is fit with this much breathing room (in
     /// points) on every side so the crop resize handles - which are centered on
     /// the crop edges - never spill outside the interactive canvas bounds.
@@ -101,6 +89,9 @@ final class AnnotationEditorModel {
 
     /// Longest-edge cap (in pixels) for the downscaled editing preview.
     private let previewImageMaxPixelSize: CGFloat = 2880
+    @ObservationIgnored private var wallpaperCacheLease: BoundedCGImageCache.Lease?
+    @ObservationIgnored private var smartRedactionTask: Task<Void, Never>?
+    private var smartRedactionGeneration = UUID()
 
     init() {
         engine.onChange = { [weak self] in
@@ -152,11 +143,13 @@ final class AnnotationEditorModel {
     // MARK: - Loading
 
     func load(url: URL?, dismiss: DismissAction) {
+        cancelSmartRedaction()
         guard let url else {
             dismiss()
             return
         }
 
+        wallpaperCacheLease = AnnotationBackgroundRenderer.beginWallpaperUse()
         removeOwnedCropFiles()
         applyAnnotationPreset()
         resetZoom()
@@ -165,7 +158,10 @@ final class AnnotationEditorModel {
         let document = ScreenshotHistoryStore.shared.loadEditDocument(for: url)
         let candidateBaseURL = ScreenshotHistoryStore.baseImageURL(for: url)
         let renderSourceURL: URL
-        if let document, !document.shapes.isEmpty,
+        // Background-only and crop-only edits still have a preserved base.
+        // Reopening their composite would bake the previous styling into the
+        // image and apply it again. Legacy v1 shapes remain raster-only.
+        if let document, document.version >= 2,
            FileManager.default.fileExists(atPath: candidateBaseURL.path) {
             renderSourceURL = candidateBaseURL
             backgroundSettings = document.backgroundSettings
@@ -217,8 +213,85 @@ final class AnnotationEditorModel {
     }
 
     func releaseEditorResources() {
+        cancelSmartRedaction()
+        wallpaperCacheLease = nil
+        // A closed SwiftUI scene can outlive its window. Release decoded
+        // pixels and edit history now instead of waiting for model deinit.
+        savedSnapshot = nil
+        sourceURL = nil
+        baseImageURL = nil
+        previewImage = nil
+        previewCGImage = nil
+        imageSize = .zero
+        isPreviewDownscaled = false
+        isCropping = false
+        cropUndoStack.removeAll()
+        cropRedoStack.removeAll()
+        engine.replaceDocument(shapes: [])
         removeOwnedCropFiles()
         RedactionImageProcessor.removeAllCachedPreviewImages()
+    }
+
+    /// Renders the composite, writes the `.screendrop` sidecar, and repoints
+    /// the editor at the preserved base image so continued edits don't re-bake
+    /// annotations onto an already-composited picture. Returns nil when there
+    /// is nothing to persist.
+    ///
+    /// This is the only thing that puts annotations on disk, so every route
+    /// out of the editor - Done, Save, Upload, the close prompt - goes
+    /// through it.
+    private(set) var isCommitting = false
+
+    @discardableResult
+    func commitEdits() async throws -> URL? {
+        guard !isCommitting else { throw CocoaError(.userCancelled) }
+        guard let sourceURL = self.sourceURL else { return nil }
+        isCommitting = true
+        defer { isCommitting = false }
+        var committedSnapshot = currentSnapshot()
+
+        let baseURL = self.baseImageURL ?? sourceURL
+        let shapes = self.shapes
+        let bindings = self.bindings
+        let backgroundSettings = self.backgroundSettings
+        let hasContent = !shapes.isEmpty || backgroundSettings.hasRenderableContent || self.isCropped
+        let hadDocument = ScreenshotHistoryStore.shared.hasEditDocument(for: sourceURL)
+
+        // Nothing drawn and nothing previously saved: there is no work to lose.
+        guard hasContent || hadDocument else {
+            self.markSaved()
+            return nil
+        }
+
+        let resultURL: URL
+        if hasContent {
+            let annotatedURL = try await AnnotationRenderer.renderToTemporaryFileInBackground(
+                sourceURL: baseURL,
+                shapes: shapes,
+                backgroundSettings: backgroundSettings
+            )
+            let document = AnnotationDocument(
+                shapes: shapes,
+                bindings: bindings,
+                background: backgroundSettings
+            )
+            resultURL = try ScreenshotHistoryStore.shared.commitAnnotations(
+                displayURL: sourceURL,
+                baseURL: baseURL,
+                renderedURL: annotatedURL,
+                document: document
+            )
+            self.baseImageURL = ScreenshotHistoryStore.baseImageURL(for: resultURL)
+        } else {
+            // All annotations were cleared on a previously-edited image:
+            // restore the untouched original.
+            resultURL = try ScreenshotHistoryStore.shared.removeAnnotations(displayURL: sourceURL)
+            self.baseImageURL = resultURL
+        }
+
+        committedSnapshot.baseImageURL = self.baseImageURL
+        savedSnapshot = committedSnapshot
+        return resultURL
     }
 
     // MARK: - Unsaved changes
@@ -451,18 +524,26 @@ final class AnnotationEditorModel {
         isSmartRedacting = true
         smartRedactionMessage = nil
 
-        Task { @MainActor in
+        let generation = UUID()
+        smartRedactionGeneration = generation
+        smartRedactionTask = Task { @MainActor [weak self] in
             let regions = await SmartRedactionRecognizer.sensitiveRegions(at: recognitionURL)
 
-            guard sourceURL == loadedSourceURL,
-                  baseImageURL == recognitionURL || sourceURL == recognitionURL else {
-                isSmartRedacting = false
-                return
-            }
+            guard !Task.isCancelled, let self, self.smartRedactionGeneration == generation else { return }
+            self.smartRedactionTask = nil
+            self.isSmartRedacting = false
+            guard self.sourceURL == loadedSourceURL,
+                  self.baseImageURL == recognitionURL || self.sourceURL == recognitionURL else { return }
 
-            applySmartRedactionRegions(regions, tool: tool)
-            isSmartRedacting = false
+            self.applySmartRedactionRegions(regions, tool: tool)
         }
+    }
+
+    private func cancelSmartRedaction() {
+        smartRedactionGeneration = UUID()
+        smartRedactionTask?.cancel()
+        smartRedactionTask = nil
+        isSmartRedacting = false
     }
 
     private func applySmartRedactionRegions(_ regions: [SmartRedactionRegion], tool: AnnotationTool) {

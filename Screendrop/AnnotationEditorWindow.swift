@@ -24,8 +24,13 @@ struct AnnotationEditorWindow: View {
     @FocusState private var focusedField: AnnotationEditorFocusedField?
     @Environment(\.dismiss) private var dismissWindow
 
+    private var isBusy: Bool { isSaving || isFinishing || isUploading || model.isCommitting }
+
     var body: some View {
         mainContent
+            .disabled(model.isCommitting)
+            .allowsHitTesting(!model.isCommitting)
+            .modifier(CaptureLibraryEditorRegistration(url: url))
             .navigationTitle("Screendrop Annotate")
             .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             .toolbar {
@@ -33,7 +38,7 @@ struct AnnotationEditorWindow: View {
                     if model.isCropping {
                         cropActions
                     } else {
-                        editingActions
+                        editingActions.disabled(isBusy)
                     }
                 }
             }
@@ -51,12 +56,19 @@ struct AnnotationEditorWindow: View {
                 AnnotationEditorActivationPolicy.leave(restorePreview: true)
             }
             .onWindowChange { window in
+                guard let window else {
+                    closeGuard.detach()
+                    return
+                }
                 configureCloseGuard()
                 closeGuard.attach(to: window)
                 closeGuard.refreshDocumentEdited()
             }
             .onDeleteCommand {
-                model.deleteSelectedAnnotation()
+                if !model.isCommitting { model.deleteSelectedAnnotation() }
+            }
+            .onChange(of: model.hasUnsavedChanges) { _, _ in
+                closeGuard.refreshDocumentEdited()
             }
             .onChange(of: model.revision) { _, _ in
                 closeGuard.refreshDocumentEdited()
@@ -72,16 +84,17 @@ struct AnnotationEditorWindow: View {
                 closeGuard.refreshDocumentEdited()
             }
             .background(AnnotationKeyCommandHandler(
+                isEnabled: { !model.isCommitting },
                 onDelete: model.deleteSelectedAnnotation,
                 onSave: saveEdits,
                 onUndo: model.undo,
                 onRedo: model.redo,
                 onSelectAll: model.selectAllAnnotations,
                 onSelectTool: model.selectTool,
-                onZoomIn: { withAnimation(.canvasZoom) { model.zoomIn() } },
-                onZoomOut: { withAnimation(.canvasZoom) { model.zoomOut() } },
-                onFitCanvas: { withAnimation(.canvasZoom) { model.fitCanvas() } },
-                onActualSize: { withAnimation(.canvasZoom) { model.setZoomPercent(100) } },
+                onZoomIn: model.zoomIn,
+                onZoomOut: model.zoomOut,
+                onFitCanvas: model.fitCanvas,
+                onActualSize: { model.setZoomPercent(100) },
                 onToggleCrop: { withAnimation(.snappy(duration: 0.2)) { model.toggleCropping() } },
                 onApplyCrop: { withAnimation(.snappy(duration: 0.2)) { model.applyCrop() } },
                 onCancelCrop: { withAnimation(.snappy(duration: 0.2)) { model.cancelCrop() } },
@@ -96,7 +109,7 @@ struct AnnotationEditorWindow: View {
                     onEditorAction: clearInspectorFocus,
                     onPickWallpaper: pickCustomWallpaper
                 )
-                .disabled(model.isCropping)
+                .disabled(model.isCropping || model.isCommitting)
             }
     }
 
@@ -242,8 +255,6 @@ struct AnnotationEditorWindow: View {
                     image: previewImage,
                     onEditorInteraction: clearInspectorFocus
                 )
-                    .padding(.horizontal, 34)
-                    .padding(.vertical, 28)
             } else if let errorMessage = model.errorMessage {
                 // A load failure (missing/unreadable source file, e.g. a stale
                 // URL replayed by macOS window restoration) should never sit
@@ -300,7 +311,7 @@ struct AnnotationEditorWindow: View {
 
     private func saveAs() {
         clearInspectorFocus()
-        guard let sourceURL = model.sourceURL else { return }
+        guard !isBusy, let sourceURL = model.sourceURL else { return }
         let baseURL = model.baseImageURL ?? sourceURL
 
         let panel = NSSavePanel()
@@ -348,7 +359,7 @@ struct AnnotationEditorWindow: View {
 
     private func uploadAnnotation(options: CloudUploadOptions) {
         clearInspectorFocus()
-        guard model.sourceURL != nil, !isUploading else { return }
+        guard model.sourceURL != nil, !isBusy else { return }
 
         isUploading = true
         Task {
@@ -357,8 +368,8 @@ struct AnnotationEditorWindow: View {
                 // Persist the current annotations first so the uploaded file
                 // matches what's saved in history, then upload that file. The
                 // editor stays open.
-                guard let sourceURL = model.sourceURL,
-                      let resultURL = try await commitEdits() else { return }
+                guard let sourceURL = model.sourceURL else { return }
+                let resultURL = try await model.commitEdits() ?? sourceURL
 
                 _ = ScreenshotPreviewStack.shared.applyAnnotation(
                     originalURL: sourceURL,
@@ -381,75 +392,20 @@ struct AnnotationEditorWindow: View {
         }
     }
 
-    /// Renders the composite, writes the `.screendrop` sidecar, and repoints
-    /// the editor at the preserved base image so continued edits don't re-bake
-    /// annotations onto an already-composited picture. Returns nil when there
-    /// is nothing to persist.
-    ///
-    /// This is the only thing that puts annotations on disk, so every route
-    /// out of the editor - Done, Save, Upload, the close prompt - goes
-    /// through it.
-    @discardableResult
-    private func commitEdits() async throws -> URL? {
-        guard let sourceURL = model.sourceURL else { return nil }
-
-        let baseURL = model.baseImageURL ?? sourceURL
-        let shapes = model.shapes
-        let bindings = model.bindings
-        let backgroundSettings = model.backgroundSettings
-        let hasContent = !shapes.isEmpty || backgroundSettings.hasRenderableContent || model.isCropped
-        let hadDocument = ScreenshotHistoryStore.shared.hasEditDocument(for: sourceURL)
-
-        // Nothing drawn and nothing previously saved: there is no work to lose.
-        guard hasContent || hadDocument else {
-            model.markSaved()
-            return nil
-        }
-
-        let resultURL: URL
-        if hasContent {
-            let annotatedURL = try await AnnotationRenderer.renderToTemporaryFileInBackground(
-                sourceURL: baseURL,
-                shapes: shapes,
-                backgroundSettings: backgroundSettings
-            )
-            let document = AnnotationDocument(
-                shapes: shapes,
-                bindings: bindings,
-                background: backgroundSettings
-            )
-            resultURL = ScreenshotHistoryStore.shared.commitAnnotations(
-                displayURL: sourceURL,
-                baseURL: baseURL,
-                renderedURL: annotatedURL,
-                document: document
-            )
-            model.baseImageURL = ScreenshotHistoryStore.baseImageURL(for: resultURL)
-        } else {
-            // All annotations were cleared on a previously-edited image:
-            // restore the untouched original.
-            resultURL = ScreenshotHistoryStore.shared.removeAnnotations(displayURL: sourceURL)
-            model.baseImageURL = resultURL
-        }
-
-        model.markSaved()
-        return resultURL
-    }
-
     /// Cmd-S. Commits without closing, so long editing sessions have a
     /// checkpoint that isn't "press Done and start over".
     private func saveEdits() {
         clearInspectorFocus()
         // Committing re-renders the composite, so a Cmd-S with nothing
         // changed should cost nothing.
-        guard model.sourceURL != nil, model.hasUnsavedChanges, !isFinishing, !isSaving else { return }
+        guard model.sourceURL != nil, model.hasUnsavedChanges, !isBusy else { return }
 
         isSaving = true
         Task {
             defer { isSaving = false }
             do {
                 guard let sourceURL = model.sourceURL,
-                      let resultURL = try await commitEdits() else { return }
+                      let resultURL = try await model.commitEdits() else { return }
                 _ = ScreenshotPreviewStack.shared.applyAnnotation(
                     originalURL: sourceURL,
                     historyURL: resultURL
@@ -468,12 +424,12 @@ struct AnnotationEditorWindow: View {
             return
         }
 
-        guard !isFinishing else { return }
+        guard !isBusy else { return }
 
         isFinishing = true
         Task {
             do {
-                if let resultURL = try await commitEdits() {
+                if let resultURL = try await model.commitEdits() {
                     let updatedExistingPreview = ScreenshotPreviewStack.shared.applyAnnotation(
                         originalURL: sourceURL,
                         historyURL: resultURL
@@ -481,6 +437,10 @@ struct AnnotationEditorWindow: View {
                     if !updatedExistingPreview {
                         PreviewPanelPresenter.shared.show(displayID: nil)
                     }
+                }
+                guard !model.hasUnsavedChanges else {
+                    isFinishing = false
+                    return
                 }
                 model.releaseEditorResources()
                 dismissWindow()
@@ -492,23 +452,27 @@ struct AnnotationEditorWindow: View {
     }
 
     private func configureCloseGuard() {
-        closeGuard.hasUnsavedChanges = { model.hasUnsavedChanges }
+        closeGuard.canClose = { [weak model] in model?.isCommitting != true }
+        closeGuard.hasUnsavedChanges = { [weak model] in model?.hasUnsavedChanges ?? false }
         // A screenshot is already in History whether or not it is annotated,
         // so there is no "delete the whole thing" case here.
         closeGuard.offersDelete = { false }
-        closeGuard.projectName = { model.sourceURL?.lastPathComponent ?? "this screenshot" }
-        closeGuard.onDecision = { decision, done in
+        closeGuard.projectName = { [weak model] in model?.sourceURL?.lastPathComponent ?? "this screenshot" }
+        // Capture only the model, not this view and its @State close guard.
+        closeGuard.onDecision = { [weak model] decision, done in
+            guard let model else { return }
             switch decision {
             case .save:
                 Task {
                     do {
                         if let sourceURL = model.sourceURL,
-                           let resultURL = try await commitEdits() {
+                           let resultURL = try await model.commitEdits() {
                             _ = ScreenshotPreviewStack.shared.applyAnnotation(
                                 originalURL: sourceURL,
                                 historyURL: resultURL
                             )
                         }
+                        guard !model.hasUnsavedChanges else { return }
                         model.releaseEditorResources()
                         done()
                     } catch {

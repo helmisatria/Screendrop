@@ -84,19 +84,19 @@ Screendrop can be controlled from its menu bar item or with global hotkeys.
 | `Option + 4` | Open the screen-recording picker |
 | `Option + 5` | Capture text (OCR) to the clipboard |
 
-All five shortcuts are customizable under **Settings → Screenshots** and **Settings → Screen Recordings**.
+All five shortcuts are customizable under **Settings → Screenshots** and **Settings → Screen Recordings**. If a replacement shortcut cannot be registered, Settings explains the failure and keeps your previous working shortcut.
 
 You can also:
 
 - Run capture and recording actions from Apple Shortcuts, Siri, or Spotlight.
 - Right-click one or more images in Finder and choose **Open With → Screendrop**.
-- Reopen recent screenshots and recordings from the menu bar or the full History view.
+- Browse screenshots and recordings together in the native Library, or reopen recent captures from the menu bar.
 
 ## Screenshots
 
 ### Capture
 
-Capture an entire display, a window, or a freely selected area. Screenshots are taken at native display resolution and imported into local History before any optional automation runs.
+Capture an entire display, a window, or a freely selected area. Screenshots are taken at native display resolution and imported into the local Library before any optional automation runs.
 
 Screenshot preferences include:
 
@@ -112,7 +112,7 @@ Screenshot preferences include:
 
 **Capture Text** (`Option + 5`, or the menu bar) drags out an area like a normal
 area capture, recognizes the text inside it with on-device Vision OCR, and puts
-that text on the clipboard. No image is saved, nothing is added to History, and
+that text on the clipboard. No image is saved, nothing is added to Library, and
 no preview card appears - a brief toast confirms what was copied.
 
 Recognized lines are returned in reading order, so multi-column screenshots
@@ -130,7 +130,7 @@ Choose exactly what happens after every screenshot:
 - Open the annotation editor.
 - Pin it above other windows.
 
-Recording automation has its own independent settings for previewing, copying, saving, uploading, and opening Studio.
+Recording automation has its own independent settings for previewing, copying, saving, uploading, and opening Studio. Automatic uploading requires Cloud setup; the action links directly to **Settings → Cloud** when configuration is missing.
 
 ### Floating Preview Stack
 
@@ -148,20 +148,33 @@ New captures appear as floating cards on the active display. From a card you can
 
 The overlay can appear on the left or right, close automatically after a chosen delay, and dismiss after a drag. Its actions are completely rearrangeable: drag actions between four corner slots, the center buttons, and a hidden-actions tray in **Settings → Overlay**.
 
+Opening Save keeps a screenshot preview available if you cancel or saving fails. If a screenshot cannot be written to the configured export folder, choose another location or retry from the error dialog.
+
+A recording card is a quick handoff: it closes once Studio has loaded successfully or a manual Save or Upload from the card succeeds. Failed or cancelled actions keep the card available for retry. Exporting or sharing from Studio or Library also clears that recording's card; the recording remains in Library. Studio shows **Saved** with a Finder reveal action, or **Link Copied** with actions to copy or open the share link, without creating another overlay.
+
 When the stack is collapsed, it becomes a small peek tab instead of disappearing. This keeps captures close without covering the workspace.
 
-### History
+### Library
 
-History keeps screenshots and complete recording projects together. It shows thumbnails, dimensions, capture times, video durations, editable-project state, and saved cloud links.
+Library brings screenshots, videos, and complete recording projects into one native macOS window, replacing the History page and separate Recording Projects browser. The sidebar filters All Captures, Screenshots, and Recordings. Switch between thumbnail grid and list views, search by name, or sort by capture date, name, and last modification. The layout, sort order, and inspector visibility are remembered.
 
-From History you can Quick Look, copy, annotate, edit, upload, reveal in Finder, or delete a capture. The menu bar also exposes a compact list of recent items.
+The browser uses reusable AppKit collection cells, background package discovery, and a bounded thumbnail cache with cancellable loading. The inspector shows dimensions, capture dates, duration, disk usage, editable-project state, file location, and cloud sharing actions. Recording packages and their History entries appear as one capture; existing files and edits stay where they are.
+
+- Double-click a capture or press **Space** for a large Quick Look preview. Use **Edit** to annotate a screenshot or reopen a recording in Studio.
+- Reopening an edited screenshot restores its preserved base image and saved annotations and background settings, including screenshots with only background or crop edits.
+- Use **Command-click**, **Shift-click**, or **Command-A** to select multiple captures, then copy, export, reveal in Finder, or move them to Trash. **Command-C** copies the selection and **Command-Delete** offers Move to Trash.
+- Press **Return** to rename a selected capture. Screenshot titles are stored separately from filenames, preserving annotation sidecars.
+- Recording previews, copies, and exports resolve the edited deliverable, including the cursor and camera. Preparing an uncached recording can take time; Library shows the operation in its status bar.
+- **Move to Trash** includes the capture's edits and recording tracks. Close a capture's editor first. Exported copies and cloud links are unaffected; deleting a cloud copy is a separate inspector action.
+
+Normal launches open Library, with a Dock icon while regular windows are open. Launch at login stays quietly in the menu bar. Open Library again from the menu bar, Finder, Spotlight, or **Command-Shift-L**. Closing it leaves capture shortcuts and the menu bar available. **Command-Option-I** toggles the inspector.
 
 ### Open Images from Finder
 
 Screendrop registers as an image editor in Finder. Opening an image with Screendrop:
 
 1. Validates the image.
-2. Imports a copy into Screendrop History.
+2. Imports a copy into the Screendrop Library.
 3. Opens the copy in the annotation editor.
 
 The original file is never modified. Multiple selected images can be opened at once, each in its own editor window.
@@ -169,6 +182,8 @@ The original file is never modified. Multiple selected images can be opened at o
 ## Annotation Studio
 
 The annotation editor is non-destructive. Screendrop preserves the untouched base image and writes editable state to a neighboring `.screendrop` sidecar, so saved annotations can be reopened and changed later. Display previews are lightweight, while final renders use the source image's full pixel resolution.
+
+Save, Done, and Upload coordinate screenshot commits so conflicting saves cannot overlap. Failed commits keep the editor open with its changes unsaved; file replacements retain recovery copies until the image and editable files are written successfully. Upload also works on screenshots without annotations. Recording Studio likewise stays open when **Save and Close** cannot save the project.
 
 ### Drawing and Redaction
 
@@ -204,6 +219,8 @@ Turn a plain screenshot into a finished visual without leaving Screendrop:
 
 The editor keeps these effects live and re-editable instead of flattening them into the source.
 
+The canvas zoom menu offers Fit Canvas (⌘1), actual size (⌘0), and zoom in/out (⌘+/⌘−), up to 1000%. Fit leaves breathing room around the composition; zoomed content uses the full editor workspace. Pinch or hold ⌘/Option while scrolling to zoom around the pointer, and scroll to pan. Pinch zoom keeps its starting image point fixed until a canvas edge constrains the view. Menu and keyboard zoom use the center of your current view. Panning stops at the composition edges; axes that fit inside the viewport stay centered. Fit recenters the whole composition. These controls change only the editing view, not the exported image.
+
 Shared presets include portable colors, gradients, layout, camera, blur, border, and watermark settings. Local wallpaper images and their file paths are never exported or imported; a wallpaper-based preset uses no background when opened on another Mac.
 
 ## Screen Recording
@@ -218,6 +235,8 @@ The recording picker provides one place to prepare a session:
 - Toggle system audio.
 - Set a 1, 3, or 5 second start timer.
 - Write and enable a teleprompter script.
+
+During the start countdown, click **Cancel**, press **Escape**, or close the recorder to cancel the pending recording. Source selection is disabled until the countdown finishes or is cancelled. The display control shows source-loading progress; if loading fails, it offers Retry and, when needed, a link to screen recording permissions.
 
 Turning on the camera starts a live preview before recording begins, giving the camera time to settle exposure and white balance. Camera permission failures or disconnected optional devices do not throw away the screen recording; Screendrop warns and continues without that input.
 
@@ -244,7 +263,7 @@ The teleprompter and its speech tracking are best-effort and never interrupt the
 
 ## Recording Studio
 
-Every new recording is stored as a non-destructive session package. The package preserves the screen master, optional camera master, input timeline, metadata, and a small editable project document. The original media stays untouched, and the project can be reopened from History.
+Every new recording is stored as a non-destructive session package. The package preserves the screen master, optional camera master, input timeline, metadata, and a small editable project document. The original media stays untouched, and the project can be reopened from Library.
 
 ### Timeline Editing
 
@@ -302,7 +321,11 @@ Transcript cuts update the video timeline and captions together and remain undoa
 
 Studio exports the complete composition-screen, camera, backgrounds, zooms, cursor, click effects, keystrokes, captions, edits, speed changes, and selected audio-in one render.
 
-You can choose quality, codec, resolution, and whether to include audio. Export and Share show progress, can be cancelled, and report completion. Renders are cached against the project state, so exporting or sharing the same edit again can reuse finished work.
+Export Options includes quality, codec, resolution, format, **30 / 60 fps**, **Motion blur**, and audio. The defaults remain 60 fps with motion blur enabled. Choose 30 fps and turn motion blur off to reduce rendering work, or keep either feature independently. Confirmed options are remembered for new recordings and saved with the project; Share uses the same project settings. Existing projects retain their original 60 fps and blur behavior until you change them.
+
+Export and Share show progress, can be cancelled, and report completion. Renders are cached against the project state, including frame rate and motion blur, so exporting or sharing the same edit again can reuse finished work.
+
+Studio uses Metal to accelerate eligible motion-blur frames. Blur-on uses a one-frame shutter at the selected frame rate; blur-off draws the screen once at each frame's camera position. Core Graphics remains available for unsupported frames and devices. See [export performance](docs/export-performance.md) for the rendering policy, benchmarks, and comparison workflow.
 
 Screendrop also includes a lightweight trim-and-compress editor for regular video files. FFmpeg enables its conversion and compression options:
 
@@ -357,7 +380,7 @@ Screendrop verifies the Worker URL and token before enabling uploads.
 
 1. Screendrop sends the file to the Worker with `PUT /api/upload`.
 2. The Worker validates the bearer token, streams the file to R2, and writes its metadata to D1.
-3. The Worker returns a share URL. Screendrop copies it and stores it in local History.
+3. The Worker returns a share URL. Screendrop copies it and stores it in the local Library.
 4. For edited recordings, Screendrop uploads the rendered final cut-not the raw screen master.
 5. Screendrop then adds best-effort video sidecars: a title, poster, transcript remapped to the edited timeline, and a storyboard sprite used for scrub previews.
 
@@ -383,6 +406,8 @@ macOS may request:
 
 Screendrop windows are excluded from captures by default. Enable **Settings → General → Include Screendrop windows in captures** when you intentionally want preview cards, recording controls, Settings, or other Screendrop UI in the result.
 
+While this setting is enabled, a reminder below the pre-record bar warns that Screendrop windows will be captured. Turn off its switch to disable capture visibility immediately; the reminder disappears when the setting is off or recording begins.
+
 ## Building Locally
 
 Requirements:
@@ -403,6 +428,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild build \
 ```
 
 There is no test target. A successful Xcode build is the automated verification gate.
+
+The standalone [motion-blur benchmark](docs/export-performance.md#standalone-check) also compares the Metal renderer with Core Graphics and checks encoder interoperability and settled screen reuse without launching Screendrop. [Editor performance](docs/editor-performance.md) documents image budgets, close/cancellation behavior, and standalone resource checks.
 
 ## Releasing
 

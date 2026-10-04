@@ -208,8 +208,19 @@ final class RecordingStudioModel {
     /// live progress and the history card mirrors the state.
     private(set) var shareItemID: UUID?
 
-    /// Format the audio-only export writes. Persisted so the round trip
-    /// through an external tool keeps whatever that tool accepts.
+    /// Gain shared by playback and video/audio export; 1 preserves the source.
+    var audioVolume: CGFloat = 1 {
+        didSet {
+            updatePlaybackVolume()
+            scheduleProjectSave()
+        }
+    }
+
+    private func updatePlaybackVolume() {
+        applyRecordedAudioMix()
+    }
+
+    /// Format the audio-only export writes.
     var audioExportFormat: RecordingAudioFormat = .m4a {
         didSet { scheduleProjectSave() }
     }
@@ -234,6 +245,9 @@ final class RecordingStudioModel {
     private var transcriptionTask: Task<Void, Never>?
     private var projectSaveTask: Task<Void, Never>?
     private var screenAsset: AVURLAsset?
+    private var isTornDown = false
+    private var isLoading = false
+    private var wallpaperCacheLease: BoundedCGImageCache.Lease?
     private let editUndoManager = UndoManager()
     private(set) var undoRevision = 0
     private var zoomEditSnapshot: [ZoomCue]?
@@ -279,7 +293,10 @@ final class RecordingStudioModel {
     }
 
     func load() async {
-        guard !isLoaded else { return }
+        guard !isLoaded, !isLoading, !isTornDown, !Task.isCancelled else { return }
+        isLoading = true
+        defer { isLoading = false }
+        wallpaperCacheLease = AnnotationBackgroundRenderer.beginWallpaperUse()
 
         if let session {
             manifest = session.loadCaptureManifest()
@@ -290,17 +307,20 @@ final class RecordingStudioModel {
         screenAsset = asset
         do {
             let (durationTime, tracks) = try await asset.load(.duration, .tracks)
+            guard !isTornDown, !Task.isCancelled else { return }
             sourceDuration = durationTime.seconds
             duration = sourceDuration
             if let videoTrack = tracks.first(where: { $0.mediaType == .video }) {
                 screenVideoTrack = videoTrack
                 let naturalSize = try await videoTrack.load(.naturalSize)
+                guard !isTornDown, !Task.isCancelled else { return }
                 if naturalSize.width > 0, naturalSize.height > 0 {
                     videoSize = naturalSize
                 }
             }
             hasRecordedAudio = tracks.contains { $0.mediaType == .audio }
         } catch {
+            guard !isTornDown, !Task.isCancelled else { return }
             loadError = "Could not open the recording: \(error.localizedDescription)"
             return
         }
@@ -392,7 +412,7 @@ final class RecordingStudioModel {
         skippedClips = document?.skippedClips ?? []
         replacementAudioBasis = RecordingClipTimeline(segments: document?.replacementAudioBasis ?? displayClipTimeline.segments)
         duration = clipTimeline.duration
-        selectedClipID = clipTimeline.segments.first?.id
+        selectedClipID = nil
         configureAudioTrackEdits(from: document?.audioTrackEdits)
 
         // Resolve the imported soundtrack before the first player item is
@@ -400,10 +420,12 @@ final class RecordingStudioModel {
         if let session, let fileName = document?.replacementAudioFileName {
             let url = session.directoryURL.appendingPathComponent(fileName)
             if FileManager.default.fileExists(atPath: url.path) {
-                replacementAudio = await RecordingReplacementAudio.load(
+                let loadedAudio = await RecordingReplacementAudio.load(
                     url: url,
                     displayName: document?.replacementAudioDisplayName ?? fileName
                 )
+                guard !isTornDown, !Task.isCancelled else { return }
+                replacementAudio = loadedAudio
             }
         }
 
@@ -455,6 +477,12 @@ final class RecordingStudioModel {
         // A project that never chose its own settings inherits whatever
         // was picked last, so "export as MP4" sticks across recordings.
         exportSettings = document.exportSettings ?? RecordingExportPreferences.lastSettings
+        if document.exportSettings == nil {
+            // Old projects without export settings may inherit quality/codec
+            // preferences, but keep their original cadence and blur policy.
+            exportSettings.frameRate = nil
+            exportSettings.motionBlurEnabled = nil
+        }
         showsClickEffects = document.showsClickEffects ?? showsClickEffects
         showsKeystrokes = document.showsKeystrokes ?? true
         keystrokePlacement = document.keystrokePlacement ?? .bottomCenter
@@ -470,19 +498,30 @@ final class RecordingStudioModel {
         audioExportFormat = document.audioExportFormatValue
         systemAudioGainDB = Self.clampedAudioGain(document.systemAudioGainDB ?? 0)
         microphoneAudioGainDB = Self.clampedAudioGain(document.microphoneAudioGainDB ?? 0)
+        audioVolume = CGFloat(RecordingAudioGain.normalized(document.audioVolume ?? 1))
     }
 
     func teardown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+        // Persist only a fully loaded document, before releasing its data.
+        if isLoaded { writeDraftNow() }
+        isLoaded = false
         StudioProjectRegistry.shared.unregister(self)
         exportTask?.cancel()
         audioExportTask?.cancel()
         replacementAudioTask?.cancel()
         audioAnalysisTask?.cancel()
-        shareTask?.cancel()
+        cancelShare()
         transcriptionTask?.cancel()
         projectSaveTask?.cancel()
-        timelineThumbnails.cancel()
-        writeDraftNow()
+        exportTask = nil
+        audioExportTask = nil
+        replacementAudioTask = nil
+        shareTask = nil
+        transcriptionTask = nil
+        projectSaveTask = nil
+        timelineThumbnails.releaseResources()
         pause()
         if let timeObserver {
             screenPlayer.removeTimeObserver(timeObserver)
@@ -496,6 +535,27 @@ final class RecordingStudioModel {
         screenPlayer.replaceCurrentItem(with: nil)
         trimPreviewPlayer.replaceCurrentItem(with: nil)
         cameraPlayer.replaceCurrentItem(with: nil)
+        screenAsset?.cancelLoading()
+        screenAsset = nil
+        screenVideoTrack = nil
+        replacementAudio = nil
+        editUndoManager.removeAllActions()
+        zoomEditSnapshot = nil
+        lastSavedDocument = nil
+        pointerCapture = PointerCaptureFile()
+        pointerTimeline = .empty
+        keystrokeTimeline = .empty
+        viewportTimeline = .identity
+        previewReframe = nil
+        reframeFocusTimeline = nil
+        recordedPressTimes.removeAll()
+        zoomCues.removeAll()
+        subtitleCues.removeAll()
+        transcriptWords.removeAll()
+        subtitleTimeline = .empty
+        karaokeTimeline = .empty
+        clipTimeline = RecordingClipTimeline(segments: [])
+        wallpaperCacheLease = nil
     }
 
     // MARK: - Style presets
@@ -1225,6 +1285,7 @@ final class RecordingStudioModel {
         let playerItem = AVPlayerItem(asset: playbackAsset)
         applyRecordedAudioMix(to: playerItem)
         screenPlayer.replaceCurrentItem(with: playerItem)
+        updatePlaybackVolume()
         screenPlayer.actionAtItemEnd = .pause
         currentTime = min(max(editorTime, 0), duration)
         movePlayers(to: currentTime)
@@ -1291,14 +1352,15 @@ final class RecordingStudioModel {
 
     private func applyRecordedAudioMix(to item: AVPlayerItem) {
         guard replacementAudio == nil else {
-            item.audioMix = nil
+            item.audioMix = RecordingAudioGain.makeMix(tracks: item.asset.tracks(withMediaType: .audio), volume: Double(audioVolume))
             return
         }
         let tracks = item.asset.tracks(withMediaType: .audio)
         item.audioMix = RecordingAudioGainMix.make(
             tracks: tracks,
             gainsDB: recordedAudioGains(forTrackCount: tracks.count),
-            trackEdits: outputAudioTrackEdits
+            trackEdits: outputAudioTrackEdits,
+            volume: Double(audioVolume)
         )
     }
 
@@ -1717,7 +1779,8 @@ final class RecordingStudioModel {
             audioExportFormat: audioExportFormat,
             systemAudioGainDB: systemAudioGainDB,
             microphoneAudioGainDB: microphoneAudioGainDB,
-            audioTrackEdits: persistedAudioTrackEdits
+            audioTrackEdits: persistedAudioTrackEdits,
+            audioVolume: Double(audioVolume)
         )
     }
 
@@ -1763,8 +1826,9 @@ final class RecordingStudioModel {
     }
 
     /// ⌘S. Commits the working copy to `edit.json` and clears the draft.
-    func saveProject() {
-        guard isLoaded, let session else { return }
+    @discardableResult
+    func saveProject() -> Bool {
+        guard isLoaded, let session else { return false }
         projectSaveTask?.cancel()
         let document = currentDocument()
         do {
@@ -1776,8 +1840,11 @@ final class RecordingStudioModel {
             dropStaleRender(for: document, in: session)
             RecordingProjectStore.shared.reload()
             flashSaveConfirmation()
+            return true
         } catch {
-            print("Failed to save recording project: \(error)")
+            FailureAlert.present(message: "The recording project could not be saved", error: error,
+                                 detail: "Your editor will stay open. Try saving again after resolving the problem.")
+            return false
         }
     }
 
@@ -1814,8 +1881,9 @@ final class RecordingStudioModel {
     /// The parts of a stored project that need the timeline rebuilt around
     /// them: cuts, the imported soundtrack, and everything derived from both.
     private func applyDocumentTimeline(_ document: RecordingEditDocument) async {
-        guard let session else { return }
+        guard !isTornDown, !Task.isCancelled, let session else { return }
         isApplyingDocument = true
+        defer { isApplyingDocument = false }
 
         if let storedClips = document.clips, !storedClips.isEmpty {
             clipTimeline = RecordingClipTimeline(segments: storedClips)
@@ -1830,17 +1898,19 @@ final class RecordingStudioModel {
         skippedClips = document.skippedClips ?? []
         replacementAudioBasis = RecordingClipTimeline(segments: document.replacementAudioBasis ?? displayClipTimeline.segments)
         duration = clipTimeline.duration
-        selectedClipID = clipTimeline.segments.first?.id
+        selectedClipID = nil
         selectedAudioClipID = nil
         configureAudioTrackEdits(from: document.audioTrackEdits)
 
         if let fileName = document.replacementAudioFileName {
             let url = session.directoryURL.appendingPathComponent(fileName)
             if url != replacementAudio?.url, FileManager.default.fileExists(atPath: url.path) {
-                replacementAudio = await RecordingReplacementAudio.load(
+                let loadedAudio = await RecordingReplacementAudio.load(
                     url: url,
                     displayName: document.replacementAudioDisplayName ?? fileName
                 )
+                guard !isTornDown, !Task.isCancelled else { return }
+                replacementAudio = loadedAudio
             }
         } else {
             replacementAudio = nil
@@ -1876,7 +1946,7 @@ final class RecordingStudioModel {
     }
 
     func pointerFrame(at time: TimeInterval) -> PointerFrame? {
-        guard pointerIsSynthesized else { return nil }
+        guard !style.hidesCursor, pointerIsSynthesized else { return nil }
         return pointerTimeline.frame(at: time)
     }
 
@@ -2389,7 +2459,7 @@ final class RecordingStudioModel {
     private func makeExportConfiguration() -> RecordingStudioExporter.Configuration {
         let reframe = makeReframeTrack()
         let fitContentAspect: CGFloat? =
-            exportAspect != .original && exportAspectMode == .fit && videoSize.height > 0
+            (exportAspect == .original || exportAspectMode == .fit) && videoSize.height > 0
                 ? videoSize.width / videoSize.height
                 : nil
         return RecordingStudioExporter.Configuration(
@@ -2416,8 +2486,10 @@ final class RecordingStudioModel {
             recordedAudioGainsDB: recordedAudioGains(forTrackCount: expectedRecordedAudioTrackCount),
             audioTrackEdits: outputAudioTrackEdits,
             audioTrackKinds: recordedAudioTrackKindsInSourceOrder,
+            audioVolume: Double(audioVolume),
             reframe: reframe,
-            fitContentAspect: fitContentAspect
+            fitContentAspect: fitContentAspect,
+            usesUniformPadding: exportAspect == .original
         )
     }
 
@@ -2464,23 +2536,32 @@ final class RecordingStudioModel {
     // MARK: - Preview canvas
 
     /// What the Studio canvas shows: the target-aspect canvas when a
-    /// non-original aspect is selected, the source canvas otherwise.
+    /// non-original aspect is selected, the visible source plus padding otherwise.
     var basePreviewCanvasSize: CGSize {
-        exportAspect == .original ? videoSize : exportAspect.canvasSize(for: videoSize)
+        exportAspect == .original
+            ? RecordingStudioLayout.originalCanvasSize(
+                sourceSize: videoSize, style: style, contentCropRect: videoCropRect
+            )
+            : exportAspect.canvasSize(for: videoSize)
     }
 
     var previewCanvasSize: CGSize {
-        basePreviewCanvasSize
+        if exportAspect == .original, isCroppingVideo {
+            RecordingStudioLayout.originalCanvasSize(
+                sourceSize: videoSize, style: style, contentCropRect: CropRectEditor.unit
+            )
+        } else {
+            basePreviewCanvasSize
+        }
     }
 
     var sourceVideoAspect: CGFloat {
         videoSize.height > 0 ? videoSize.width / videoSize.height : 1
     }
 
-    /// Source aspect for laying out the card on a target-aspect canvas;
-    /// nil in the original-aspect layout where card and content agree.
+    /// The source aspect remains independent of the padded canvas and video crop.
     var previewContentAspect: CGFloat? {
-        guard (exportAspect != .original || isVideoCropped), videoSize.height > 0 else { return nil }
+        guard videoSize.height > 0 else { return nil }
         return sourceVideoAspect
     }
 
@@ -2490,7 +2571,7 @@ final class RecordingStudioModel {
 
     /// How the content occupies the card on a target-aspect canvas.
     var previewContentMode: RecordingStudioLayout.ContentMode {
-        exportAspect != .original && exportAspectMode == .fit ? .fit : .fill
+        exportAspect == .original || exportAspectMode == .fit ? .fit : .fill
     }
 
     /// Virtual camera for the preview: the reframe crop when active, the
@@ -2505,6 +2586,9 @@ final class RecordingStudioModel {
     /// in-memory edits - the render is stamped with the document that
     /// produced it. Both Export and Share can then skip the render entirely.
     private var freshDeliverableURL: URL? {
+        // Measure the actual renderer during development comparisons, even
+        // when this exact document already has a flattened deliverable.
+        guard ProcessInfo.processInfo.environment["SCREENDROP_EXPORT_BYPASS_CACHE"] != "1" else { return nil }
         guard let session else { return nil }
         return session.freshFinalURL(matching: currentDocument())
     }
@@ -2534,6 +2618,7 @@ final class RecordingStudioModel {
         // so a second encode would just fight it for the media engine.
         guard !exportState.isExporting, !shareState.isBusy, isLoaded else { return }
         pause()
+        let previewURL = sessionURL
 
         // A fresh deliverable (e.g. right after a share) is byte-identical
         // to what this render would produce - same configuration builds
@@ -2548,6 +2633,7 @@ final class RecordingStudioModel {
                     )
                     RecordingExportNotifier.notifySuccess(fileURL: savedURL)
                     RecordingExportNotifier.revealIfPreferred(fileURL: savedURL)
+                    ScreenshotPreviewStack.shared.dismissVideo(for: previewURL)
                     self?.exportState = .finished(savedURL)
                 } catch {
                     self?.exportState = .failed(error.localizedDescription)
@@ -2582,6 +2668,7 @@ final class RecordingStudioModel {
                 DockExportProgressCoordinator.shared.finish(dockProgressID)
                 RecordingExportNotifier.notifySuccess(fileURL: savedURL)
                 RecordingExportNotifier.revealIfPreferred(fileURL: savedURL)
+                ScreenshotPreviewStack.shared.dismissVideo(for: previewURL)
                 self?.exportState = .finished(savedURL)
             } catch is CancellationError {
                 DockExportProgressCoordinator.shared.finish(dockProgressID)
@@ -2644,7 +2731,8 @@ final class RecordingStudioModel {
             audioTrackEdits: outputAudioTrackEdits,
             audioTrackKinds: recordedAudioTrackKindsInSourceOrder,
             format: audioExportFormat,
-            replacementSlices: replacementAudioSlices
+            replacementSlices: replacementAudioSlices,
+            volume: Double(audioVolume)
         )
         let suggestedFileName = audioExportSuggestedFileName
         let dockProgressID = DockExportProgressCoordinator.shared.start()
@@ -2878,6 +2966,7 @@ final class RecordingStudioModel {
                 if session != nil {
                     ScreenshotHistoryStore.shared.setCloudURL(for: uploadURL, cloudURL: result.url)
                 }
+                ScreenshotPreviewStack.shared.dismissVideo(for: self.sessionURL)
                 self.shareState = .finished(result.url)
             } catch is CancellationError {
                 self?.shareState = .idle

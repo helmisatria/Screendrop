@@ -504,10 +504,25 @@ final class ScreenshotPreviewStack {
         dismiss(id: id)
     }
 
-    /// Dismisses any card backed by a recording package that is going away.
-    /// The overlay is a third view of the same recording alongside History and
-    /// the Projects browser, and unlike those two it is never rebuilt from
-    /// disk - so without this it keeps showing a card whose footage is gone.
+    /// Finish the quick-action handoff for one recording, whether its card
+    /// points at a screen master, a flattened deliverable, or a bare movie.
+    /// This only removes the preview; Library continues to own the recording.
+    func dismissVideo(for url: URL) {
+        if RecordingSession.isSessionDirectory(url) {
+            dismissRecordingSession(url)
+        } else if let session = RecordingDeliverable.session(for: url) {
+            dismissRecordingSession(session.directoryURL)
+        } else {
+            let standardizedURL = url.standardizedFileURL
+            let ids = items.filter {
+                $0.kind == .video && $0.url.standardizedFileURL == standardizedURL
+            }.map(\.id)
+            for id in ids { dismiss(id: id) }
+        }
+    }
+
+    /// Dismisses cards for one recording package after a handoff, completed
+    /// action, or deletion. Other captures in the stack remain available.
     func dismissRecordingSession(_ directoryURL: URL) {
         let packagePath = directoryURL.standardizedFileURL.path
         // The trailing separator keeps a sibling package with a longer name
@@ -523,11 +538,13 @@ final class ScreenshotPreviewStack {
         }
     }
 
-    func save(id: ScreenshotPreviewItem.ID) {
+    func save(id: ScreenshotPreviewItem.ID, choosingLocation: Bool = false) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         let kind = items[index].kind
+        // A save dialog, cancellation, or failure must not expire the preview.
+        markEngaged(id: id)
 
-        if ScreendropPreferences.saveButtonUsesConfiguredFolder {
+        if !choosingLocation && ScreendropPreferences.saveButtonUsesConfiguredFolder {
             guard items[index].autoSavedURL == nil else {
                 dismiss(id: id)
                 return
@@ -545,9 +562,25 @@ final class ScreenshotPreviewStack {
                 return
             }
 
-            items[index].autoSavedURL = saveToDefaultLocation(from: items[index].url)
-            guard items[index].autoSavedURL != nil else { return }
-            dismiss(id: id)
+            do {
+                items[index].autoSavedURL = try ScreenshotFileActions.saveToDefaultLocation(from: items[index].url)
+                dismiss(id: id)
+            } catch {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "The screenshot could not be saved"
+                alert.informativeText = error.localizedDescription
+                alert.addButton(withTitle: "Choose Another Location…")
+                alert.addButton(withTitle: "Retry")
+                alert.addButton(withTitle: "Cancel")
+                alert.buttons[2].keyEquivalent = "\u{1b}"
+                NSApp.activate(ignoringOtherApps: true)
+                switch alert.runModal() {
+                case .alertFirstButtonReturn: save(id: id, choosingLocation: true)
+                case .alertSecondButtonReturn: save(id: id)
+                default: break
+                }
+            }
             return
         }
 
