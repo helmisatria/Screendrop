@@ -17,7 +17,6 @@ struct RecordingAudioClipTimelineView: NSViewRepresentable {
     let pointsPerSecond: CGFloat
     let isInactive: Bool
     let onSelectClip: (UUID) -> Void
-    let onSeek: (TimeInterval) -> Void
     let onBeginEdit: () -> Void
     let onMove: (TimeInterval) -> Void
     let onTrimLeading: (TimeInterval) -> Void
@@ -34,7 +33,6 @@ struct RecordingAudioClipTimelineView: NSViewRepresentable {
         context: Context
     ) {
         nsView.onSelectClip = onSelectClip
-        nsView.onSeek = onSeek
         nsView.onBeginEdit = onBeginEdit
         nsView.onMove = onMove
         nsView.onTrimLeading = onTrimLeading
@@ -54,7 +52,6 @@ struct RecordingAudioClipTimelineView: NSViewRepresentable {
 
 final class RecordingAudioClipTimelineControl: NSView {
     var onSelectClip: ((UUID) -> Void)?
-    var onSeek: ((TimeInterval) -> Void)?
     var onBeginEdit: (() -> Void)?
     var onMove: ((TimeInterval) -> Void)?
     var onTrimLeading: ((TimeInterval) -> Void)?
@@ -217,7 +214,6 @@ final class RecordingAudioClipTimelineControl: NSView {
 
         guard let clip = clip(at: point) else {
             onSelectTrack?()
-            onSeek?(timelineTime(forX: point.x))
             return
         }
 
@@ -283,9 +279,6 @@ final class RecordingAudioClipTimelineControl: NSView {
 
         if interaction.editStarted, let actionName = interaction.kind.actionName {
             onEndEdit?(actionName)
-        } else if !interaction.crossedDragThreshold {
-            let point = convert(event.locationInWindow, from: nil)
-            onSeek?(timelineTime(forX: point.x))
         }
         updateHover(with: event)
     }

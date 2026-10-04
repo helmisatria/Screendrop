@@ -12,19 +12,17 @@ import SwiftUI
 
 struct RecordingClipTimelineView: NSViewRepresentable {
     @Binding var selectedClipID: UUID?
-    @Binding var playheadTime: TimeInterval
+    let playheadTime: TimeInterval
 
     let timeline: RecordingClipTimeline
     let skippedClipIDs: Set<UUID>
     let sourceDuration: TimeInterval
     let thumbnails: RecordingTimelineThumbnailStore
     let onSelect: (UUID) -> Void
-    let onSeek: (TimeInterval) -> Void
     let onHover: (TimeInterval?) -> Void
     let onSplit: (TimeInterval) -> Void
     let onDelete: () -> Void
     let onTrim: (RecordingClipSegment) -> Void
-    let onTrimPreview: (TimeInterval?) -> Void
     let onDisplayTimelineChange: (RecordingClipTimeline?) -> Void
     /// Pinch or ⌘-scroll over the lane: `(factor, anchor editor time)`. The
     /// anchor is the time under the pointer, which the caller keeps pinned to
@@ -36,14 +34,11 @@ struct RecordingClipTimelineView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(
             selectedClipID: $selectedClipID,
-            playheadTime: $playheadTime,
             onSelect: onSelect,
-            onSeek: onSeek,
             onHover: onHover,
             onSplit: onSplit,
             onDelete: onDelete,
             onTrim: onTrim,
-            onTrimPreview: onTrimPreview,
             onDisplayTimelineChange: onDisplayTimelineChange,
             onZoom: onZoom,
             onStep: onStep
@@ -59,12 +54,10 @@ struct RecordingClipTimelineView: NSViewRepresentable {
     func updateNSView(_ nsView: RecordingClipTimelineControl, context: Context) {
         context.coordinator.updateCallbacks(
             onSelect: onSelect,
-            onSeek: onSeek,
             onHover: onHover,
             onSplit: onSplit,
             onDelete: onDelete,
             onTrim: onTrim,
-            onTrimPreview: onTrimPreview,
             onDisplayTimelineChange: onDisplayTimelineChange,
             onZoom: onZoom,
             onStep: onStep
@@ -81,42 +74,33 @@ struct RecordingClipTimelineView: NSViewRepresentable {
 
     final class Coordinator {
         @Binding private var selectedClipID: UUID?
-        @Binding private var playheadTime: TimeInterval
 
         private var onSelect: (UUID) -> Void
-        private var onSeek: (TimeInterval) -> Void
         private var onHover: (TimeInterval?) -> Void
         private var onSplit: (TimeInterval) -> Void
         private var onDelete: () -> Void
         private var onTrim: (RecordingClipSegment) -> Void
-        private var onTrimPreview: (TimeInterval?) -> Void
         private var onDisplayTimelineChange: (RecordingClipTimeline?) -> Void
         private var onZoom: (Double, TimeInterval) -> Void
         private var onStep: (TimeInterval) -> Void
 
         init(
             selectedClipID: Binding<UUID?>,
-            playheadTime: Binding<TimeInterval>,
             onSelect: @escaping (UUID) -> Void,
-            onSeek: @escaping (TimeInterval) -> Void,
             onHover: @escaping (TimeInterval?) -> Void,
             onSplit: @escaping (TimeInterval) -> Void,
             onDelete: @escaping () -> Void,
             onTrim: @escaping (RecordingClipSegment) -> Void,
-            onTrimPreview: @escaping (TimeInterval?) -> Void,
             onDisplayTimelineChange: @escaping (RecordingClipTimeline?) -> Void,
             onZoom: @escaping (Double, TimeInterval) -> Void,
             onStep: @escaping (TimeInterval) -> Void
         ) {
             _selectedClipID = selectedClipID
-            _playheadTime = playheadTime
             self.onSelect = onSelect
-            self.onSeek = onSeek
             self.onHover = onHover
             self.onSplit = onSplit
             self.onDelete = onDelete
             self.onTrim = onTrim
-            self.onTrimPreview = onTrimPreview
             self.onDisplayTimelineChange = onDisplayTimelineChange
             self.onZoom = onZoom
             self.onStep = onStep
@@ -124,23 +108,19 @@ struct RecordingClipTimelineView: NSViewRepresentable {
 
         func updateCallbacks(
             onSelect: @escaping (UUID) -> Void,
-            onSeek: @escaping (TimeInterval) -> Void,
             onHover: @escaping (TimeInterval?) -> Void,
             onSplit: @escaping (TimeInterval) -> Void,
             onDelete: @escaping () -> Void,
             onTrim: @escaping (RecordingClipSegment) -> Void,
-            onTrimPreview: @escaping (TimeInterval?) -> Void,
             onDisplayTimelineChange: @escaping (RecordingClipTimeline?) -> Void,
             onZoom: @escaping (Double, TimeInterval) -> Void,
             onStep: @escaping (TimeInterval) -> Void
         ) {
             self.onSelect = onSelect
-            self.onSeek = onSeek
             self.onHover = onHover
             self.onSplit = onSplit
             self.onDelete = onDelete
             self.onTrim = onTrim
-            self.onTrimPreview = onTrimPreview
             self.onDisplayTimelineChange = onDisplayTimelineChange
             self.onZoom = onZoom
             self.onStep = onStep
@@ -150,10 +130,6 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             view.selectionDidChange = { [weak self] id in
                 self?.selectedClipID = id
                 self?.onSelect(id)
-            }
-            view.playheadDidChange = { [weak self] time in
-                self?.playheadTime = time
-                self?.onSeek(time)
             }
             view.hoverTimeDidChange = { [weak self] time in
                 self?.onHover(time)
@@ -166,9 +142,6 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             }
             view.trimDidCommit = { [weak self] clip in
                 self?.onTrim(clip)
-            }
-            view.trimPreviewSourceTimeDidChange = { [weak self] time in
-                self?.onTrimPreview(time)
             }
             view.displayTimelineDidChange = { [weak self] timeline in
                 Task { @MainActor [weak self] in
@@ -188,12 +161,10 @@ struct RecordingClipTimelineView: NSViewRepresentable {
 final class RecordingClipTimelineControl: NSView {
     var skippedClipIDs: Set<UUID> = []
     var selectionDidChange: ((UUID) -> Void)?
-    var playheadDidChange: ((TimeInterval) -> Void)?
     var hoverTimeDidChange: ((TimeInterval?) -> Void)?
     var splitRequested: ((TimeInterval) -> Void)?
     var deleteRequested: (() -> Void)?
     var trimDidCommit: ((RecordingClipSegment) -> Void)?
-    var trimPreviewSourceTimeDidChange: ((TimeInterval?) -> Void)?
     var displayTimelineDidChange: ((RecordingClipTimeline?) -> Void)?
     var zoomRequested: ((Double, TimeInterval) -> Void)?
     var stepRequested: ((TimeInterval) -> Void)?
@@ -204,7 +175,7 @@ final class RecordingClipTimelineControl: NSView {
     }
 
     private enum DragTarget {
-        case scrub
+        case selectOnly
         case trim(clipID: UUID, edge: Edge)
     }
 
@@ -367,7 +338,7 @@ final class RecordingClipTimelineControl: NSView {
         if hoveredEdge != nil {
             NSCursor.resizeLeftRight.set()
         } else {
-            NSCursor.crosshair.set()
+            NSCursor.arrow.set()
         }
     }
 
@@ -408,9 +379,7 @@ final class RecordingClipTimelineControl: NSView {
             dragTarget = .trim(clipID: hit.clipID, edge: hit.edge)
             dragStartClip = clip
         } else {
-            dragTarget = .scrub
-            playheadTime = time
-            playheadDidChange?(time)
+            dragTarget = .selectOnly
         }
         needsDisplay = true
     }
@@ -420,10 +389,8 @@ final class RecordingClipTimelineControl: NSView {
         let point = convert(event.locationInWindow, from: nil)
 
         switch dragTarget {
-        case .scrub:
-            let time = editorTime(forX: point.x)
-            playheadTime = time
-            playheadDidChange?(time)
+        case .selectOnly:
+            return
         case .trim(let clipID, let edge):
             updateTrim(clipID: clipID, edge: edge, point: point)
         }
@@ -431,7 +398,6 @@ final class RecordingClipTimelineControl: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        let wasTrimming = dragStartClip != nil
         if case .trim(let clipID, _) = dragTarget,
            let original = dragStartClip,
            let replacement = timeline.segments.first(where: { $0.id == clipID }),
@@ -443,9 +409,6 @@ final class RecordingClipTimelineControl: NSView {
         dragStartPoint = nil
         dragStartTimeline = nil
         dragStartClip = nil
-        if wasTrimming {
-            trimPreviewSourceTimeDidChange?(nil)
-        }
         updateHover(with: event, forceCallback: true)
         needsDisplay = true
     }
@@ -626,10 +589,6 @@ final class RecordingClipTimelineControl: NSView {
         }
         timeline = startTimeline.replacing(replacement)
         publishDisplayTimelineIfNeeded()
-        let previewSourceTime = edge == .leading
-            ? replacement.sourceStart
-            : replacement.sourceEnd
-        trimPreviewSourceTimeDidChange?(previewSourceTime)
     }
 
     private func edgeHit(at point: CGPoint) -> EdgeHit? {

@@ -236,7 +236,6 @@ struct InspectorSlider: View {
     @FocusState private var focusedPart: FocusedPart?
     @State private var draftText = ""
     @State private var editingBaselineText = ""
-    @State private var valueSelection: TextSelection?
     @State private var isHovering = false
     @State private var dragStartValue: CGFloat?
 
@@ -348,7 +347,8 @@ struct InspectorSlider: View {
     }
 
     private var valueField: some View {
-        TextField(title, text: $draftText, selection: $valueSelection)
+        // Let the native editor manage selection when formatted text changes length.
+        TextField(title, text: $draftText)
             .textFieldStyle(.plain)
             .font(.inspectorNumeric)
             .foregroundStyle(.primary.opacity(0.85))
@@ -433,7 +433,6 @@ struct InspectorSlider: View {
         if focusedPart == .value {
             beginValueEditing()
         } else {
-            valueSelection = nil
             draftText = format.displayString(for: value)
         }
     }
@@ -441,9 +440,7 @@ struct InspectorSlider: View {
     private func beginValueEditing() {
         let editingText = format.editingString(for: value)
         editingBaselineText = editingText
-        valueSelection = nil
         draftText = editingText
-        valueSelection = TextSelection(range: draftText.startIndex..<draftText.endIndex)
     }
 
     private func commitDraftText() {

@@ -1177,13 +1177,11 @@ final class RecordingStudioModel {
     func trimClip(_ replacement: RecordingClipSegment) {
         let next = clipTimeline.replacing(replacement)
         guard next != clipTimeline else { return }
-        let editorTime = next.editorRange(for: replacement.id)?.lowerBound ?? currentTime
         applyClipTimeline(
             next,
             selectedID: replacement.id,
             playheadTime: min(currentTime, next.duration),
-            actionName: "Trim Clip",
-            hoverTime: editorTime
+            actionName: "Trim Clip"
         )
     }
 

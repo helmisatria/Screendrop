@@ -1743,49 +1743,28 @@ private struct StudioTimelineEditor: View {
                 zoom: zoom
             )
 
-            VStack(spacing: StudioTimelineMetrics.rowSpacing) {
-                Color.clear
-                    .frame(height: StudioTimelineMetrics.playheadLaneHeight)
-
-                VStack(spacing: 0) {
-                    VStack(spacing: 0) {
-                        StudioTimelineRuler(
-                            duration: displayTimeline.duration,
-                            pointsPerSecond: scale.pointsPerSecond,
-                            scrollX: scrollX,
-                            onHover: { time in
-                                previewTimeline(atDisplayTime: time)
-                            },
-                            onScrub: { time in
-                                model.pause()
-                                model.seek(to: editorTime(forDisplayTime: time))
-                            }
-                        )
-                        .frame(height: StudioTimelineMetrics.rulerHeight)
-
-                        StudioTimelineScrubSurface(
-                            duration: displayTimeline.duration,
-                            pointsPerSecond: scale.pointsPerSecond,
-                            scrollX: scrollX,
-                            onHover: { time in
-                                previewTimeline(atDisplayTime: time)
-                            },
-                            onScrub: { time in
-                                model.pause()
-                                model.seek(to: editorTime(forDisplayTime: time))
-                            }
-                        )
-                        .frame(height: StudioTimelineMetrics.rowSpacing)
+            VStack(spacing: 0) {
+                StudioTimelineRuler(
+                    duration: displayTimeline.duration,
+                    pointsPerSecond: scale.pointsPerSecond,
+                    scrollX: scrollX,
+                    onHover: { time in
+                        updateTimelineHover(atDisplayTime: time)
+                    },
+                    onScrub: { time in
+                        model.pause()
+                        model.seek(to: editorTime(forDisplayTime: time))
                     }
-                    .background {
-                        StudioTimelineZoomEventMonitor { factor, viewportX in
-                            let anchorTime = scale.time(forX: viewportX + scrollX)
-                            applyZoom(factor: factor, anchorTime: anchorTime)
-                        }
+                )
+                .frame(height: StudioTimelineMetrics.rulerInteractionHeight)
+                .background {
+                    StudioTimelineZoomEventMonitor { factor, viewportX in
+                        let anchorTime = scale.time(forX: viewportX + scrollX)
+                        applyZoom(factor: factor, anchorTime: anchorTime)
                     }
-
-                    scrollingLanes(scale: scale)
                 }
+
+                scrollingLanes(scale: scale)
             }
             .overlay {
                 ZStack {
@@ -1801,10 +1780,7 @@ private struct StudioTimelineEditor: View {
                         time: displayPlayheadTime,
                         scale: scale,
                         scrollX: scrollX
-                    ) { time in
-                        model.pause()
-                        model.seek(to: editorTime(forDisplayTime: time))
-                    }
+                    )
                 }
             }
             .onChange(of: proxy.size.width, initial: true) { _, width in
@@ -1888,10 +1864,6 @@ private struct StudioTimelineEditor: View {
                             onSelectClip: { id in
                                 model.selectAudioClip(id, in: track.kind)
                             },
-                            onSeek: { time in
-                                model.pause()
-                                model.seek(to: model.outputTime(forDisplayTime: time))
-                            },
                             onBeginEdit: {
                                 model.beginAudioClipEdit()
                             },
@@ -1951,18 +1923,14 @@ private struct StudioTimelineEditor: View {
     private var clipLane: some View {
         RecordingClipTimelineView(
             selectedClipID: $model.selectedClipID,
-            playheadTime: Binding(get: { model.displayTime(forOutputTime: model.currentTime) }, set: { _ in }),
+            playheadTime: model.displayTime(forOutputTime: model.currentTime),
             timeline: model.displayClipTimeline,
             skippedClipIDs: model.skippedClipIDs,
             sourceDuration: model.sourceDuration,
             thumbnails: model.timelineThumbnails,
             onSelect: { model.selectClip(id: $0) },
-            onSeek: { time in
-                model.pause()
-                model.seek(to: model.outputTime(forDisplayTime: time))
-            },
             onHover: { time in
-                previewTimeline(atEditorTime: time.map { model.outputTime(forDisplayTime: $0) })
+                updateTimelineHover(atEditorTime: time.map { model.outputTime(forDisplayTime: $0) })
             },
             onSplit: { time in
                 guard let location = model.displayClipTimeline.location(at: time),
@@ -1971,13 +1939,6 @@ private struct StudioTimelineEditor: View {
             },
             onDelete: { deleteSelection() },
             onTrim: { model.trimClip($0) },
-            onTrimPreview: { sourceTime in
-                if let sourceTime {
-                    model.previewTrim(atSourceTime: sourceTime)
-                } else {
-                    model.endTrimPreview()
-                }
-            },
             onDisplayTimelineChange: { timeline in
                 trimDisplayTimeline = timeline
             },
@@ -2119,7 +2080,7 @@ private struct StudioTimelineEditor: View {
         )
     }
 
-    private func previewTimeline(atDisplayTime time: TimeInterval?) {
+    private func updateTimelineHover(atDisplayTime time: TimeInterval?) {
         guard let time else {
             rulerHoverDisplayTime = nil
             model.timelineHoverTime = nil
@@ -2133,10 +2094,9 @@ private struct StudioTimelineEditor: View {
         model.hoverPreviewTime = position.editorTime
     }
 
-    private func previewTimeline(atEditorTime time: TimeInterval?) {
+    private func updateTimelineHover(atEditorTime time: TimeInterval?) {
         rulerHoverDisplayTime = nil
         model.timelineHoverTime = time
-        model.hoverPreviewTime = time
     }
 
     private var zoomControls: some View {
@@ -2480,6 +2440,7 @@ private enum StudioTimelineMetrics {
     static let rowSpacing: CGFloat = 8
     static let playheadLaneHeight: CGFloat = 14
     static let rulerHeight: CGFloat = 16
+    static let rulerInteractionHeight = playheadLaneHeight + rulerHeight + rowSpacing * 2
     static let clipLaneHeight: CGFloat = 52
     static let zoomLaneHeight: CGFloat = 32
     static let audioLaneHeight: CGFloat = 42
@@ -2580,7 +2541,7 @@ private struct StudioTimelineHoverIndicator: View {
             path.addLine(to: CGPoint(x: x, y: size.height))
             context.stroke(
                 path,
-                with: .color(.accentColor.opacity(0.88)),
+                with: .color(Color(red: 0.95, green: 0.50, blue: 0.48).opacity(0.7)),
                 style: StrokeStyle(
                     lineWidth: 0.8,
                     lineCap: .round,
@@ -2593,24 +2554,20 @@ private struct StudioTimelineHoverIndicator: View {
     }
 }
 
-/// Full-height playhead with a grabbable crown pin in the lane above the
-/// ruler. The crown is the only hit target - everywhere else the overlay
-/// passes clicks through to the tracks underneath.
+/// Full-height playhead marker. Input passes through to the ruler and edit
+/// targets underneath, so the marker never adds another scrub surface.
 private struct StudioTimelinePlayhead: View {
     let time: TimeInterval
     let scale: StudioTimelineScale
     let scrollX: CGFloat
-    let onScrub: (TimeInterval) -> Void
+
+    private static let tint = Color(red: 0.96, green: 0.16, blue: 0.18)
 
     private enum Metrics {
         static let crownWidth: CGFloat = 11
         static let crownHeight: CGFloat = 13
-        static let hitWidth: CGFloat = 26
-        static let hitHeight: CGFloat = 22
         static let lineWidth: CGFloat = 1.5
     }
-
-    private static let coordinateSpace = "studio.playheadLane"
 
     var body: some View {
         GeometryReader { proxy in
@@ -2622,39 +2579,42 @@ private struct StudioTimelinePlayhead: View {
 
             ZStack(alignment: .topLeading) {
                 Rectangle()
-                    .fill(Color.accentColor)
+                    .fill(Self.tint)
                     .frame(
                         width: Metrics.lineWidth,
                         height: max(0, proxy.size.height - Metrics.crownHeight + 2)
                     )
                     .offset(x: x - Metrics.lineWidth / 2, y: Metrics.crownHeight - 2)
-                    .allowsHitTesting(false)
-                    .opacity(isVisible ? 1 : 0)
 
-                Color.clear
-                    .frame(width: Metrics.hitWidth, height: Metrics.hitHeight)
-                    .contentShape(Rectangle())
-                    .overlay(alignment: .top) {
+                PlayheadCrownShape()
+                    .fill(LinearGradient(
+                        colors: [Self.tint, Color(red: 0.76, green: 0.08, blue: 0.10)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ))
+                    .overlay {
                         PlayheadCrownShape()
-                            .fill(Color.accentColor)
-                            .frame(width: Metrics.crownWidth, height: Metrics.crownHeight)
-                            .shadow(color: .black.opacity(0.22), radius: 1, y: 0.5)
+                            .stroke(Color.white.opacity(0.65), lineWidth: 0.75)
                     }
-                    .offset(x: x - Metrics.hitWidth / 2, y: 0)
-                    .opacity(isVisible ? 1 : 0)
-                    .allowsHitTesting(isVisible)
-                    .gesture(
-                        DragGesture(
-                            minimumDistance: 0,
-                            coordinateSpace: .named(Self.coordinateSpace)
-                        )
-                        .onChanged { value in
-                            onScrub(scale.time(forX: value.location.x + scrollX))
+                    .overlay(alignment: .top) {
+                        HStack(spacing: 1.5) {
+                            ForEach(0..<3) { _ in
+                                Capsule()
+                                    .fill(Color.black.opacity(0.3))
+                                    .frame(width: 0.75, height: 4)
+                                    .shadow(color: .white.opacity(0.4), radius: 0, x: 0.5, y: 0.5)
+                            }
                         }
-                    )
+                        .padding(.top, 2.5)
+                    }
+                    .frame(width: Metrics.crownWidth, height: Metrics.crownHeight)
+                    .shadow(color: .black.opacity(0.22), radius: 1, y: 0.5)
+                    .offset(x: x - Metrics.crownWidth / 2)
             }
+            .opacity(isVisible ? 1 : 0)
         }
-        .coordinateSpace(name: Self.coordinateSpace)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -2690,43 +2650,6 @@ private struct PlayheadCrownShape: Shape {
         )
         path.closeSubpath()
         return path
-    }
-}
-
-/// Invisible continuation of the ruler through the visual gap above the clip.
-/// Keeping it as a real input surface prevents a narrow dead strip exactly
-/// where people naturally aim before dragging into the thumbnails.
-private struct StudioTimelineScrubSurface: View {
-    let duration: TimeInterval
-    let pointsPerSecond: CGFloat
-    let scrollX: CGFloat
-    let onHover: (TimeInterval?) -> Void
-    let onScrub: (TimeInterval) -> Void
-
-    var body: some View {
-        Color.clear
-            .contentShape(Rectangle())
-            .onContinuousHover { phase in
-                switch phase {
-                case .active(let location):
-                    onHover(time(atViewportX: location.x))
-                case .ended:
-                    onHover(nil)
-                }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let time = time(atViewportX: value.location.x)
-                        onHover(time)
-                        onScrub(time)
-                    }
-            )
-    }
-
-    private func time(atViewportX x: CGFloat) -> TimeInterval {
-        guard pointsPerSecond > 0 else { return 0 }
-        return min(max(Double((x + scrollX) / pointsPerSecond), 0), duration)
     }
 }
 
@@ -2899,6 +2822,9 @@ private struct StudioTimelineRuler: View {
                 drawLabel(endpointLabel, at: endpointX, trailing: true)
             }
         }
+        // Include the crown lane and the gap above the thumbnails in the hit area.
+        .padding(.top, StudioTimelineMetrics.playheadLaneHeight + StudioTimelineMetrics.rowSpacing)
+        .padding(.bottom, StudioTimelineMetrics.rowSpacing)
         .contentShape(Rectangle())
         .onContinuousHover { phase in
             switch phase {
@@ -2909,11 +2835,16 @@ private struct StudioTimelineRuler: View {
             }
         }
         .gesture(
+            // Only header presses start scrubbing; once captured, follow the
+            // pointer's horizontal position until release, even outside the header.
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     let time = time(atViewportX: value.location.x)
                     onHover(time)
                     onScrub(time)
+                }
+                .onEnded { _ in
+                    onHover(nil)
                 }
         )
     }
@@ -2989,8 +2920,7 @@ private struct StudioZoomLane: View {
     let visibleRange: ClosedRange<TimeInterval>
     let onZoom: (Double, TimeInterval) -> Void
 
-    /// Below this many dragged points, a gesture on blank lane space is
-    /// still treated as a click-to-seek rather than a zoom-creating drag.
+    /// Ignore clicks and small pointer movements when creating a zoom.
     private static let dragCreateThreshold: CGFloat = 4
 
     /// Held as a time rather than a position so a zoom change mid-drag can't
@@ -3020,9 +2950,6 @@ private struct StudioZoomLane: View {
                             if pendingZoomRange == nil,
                                abs(value.location.x - scale.x(for: startTime))
                                    < Self.dragCreateThreshold {
-                                // Still within click tolerance: scrub the
-                                // playhead, same as a plain click always has.
-                                model.seek(to: model.outputTime(forDisplayTime: time))
                                 return
                             }
 
