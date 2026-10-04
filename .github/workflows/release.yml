@@ -50,7 +50,7 @@ jobs:
           if not json.load(open(sys.argv[1]))['draft']:
               raise SystemExit('This version is already published. Increment version and build instead of replacing it.')
           PY
-          elif ! rg -q 'HTTP 404' "$RUNNER_TEMP/tag-release.error"; then
+          elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/tag-release.error"; then
             cat "$RUNNER_TEMP/tag-release.error" >&2
             exit 1
           fi
@@ -66,7 +66,7 @@ jobs:
               gh release download "$previous_tag" --repo helmisatria/Screendrop --pattern appcast.xml --dir "$RUNNER_TEMP/previous-release"
               python3 scripts/validate-release.py "$RELEASE_TAG" --previous-appcast "$RUNNER_TEMP/previous-release/appcast.xml"
             fi
-          elif ! rg -q 'HTTP 404' "$RUNNER_TEMP/latest-release.error"; then
+          elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/latest-release.error"; then
             cat "$RUNNER_TEMP/latest-release.error" >&2
             exit 1
           fi
