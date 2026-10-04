@@ -1715,9 +1715,14 @@ private struct StudioTimelineEditor: View {
                             else { model.previewSelectedSkippedClip() }
                         }
                         Button("Restore Clip") { model.deleteSelectedClip() }
+                        Button("Remove Skipped Clip") { model.removeSelectedSkippedClip() }
+                            .help("Drop this skipped footage from the timeline. Playback and export stay the same.")
+                    } else {
+                        Text("Delete toggles skip / restore")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("Delete toggles skip / restore")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Remove All Skipped") { model.removeAllSkippedClips() }
+                        .help("Drop every skipped section from the timeline. Playback and export stay the same.")
                 }
             }
             lanes
@@ -1725,6 +1730,10 @@ private struct StudioTimelineEditor: View {
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 14)
+        .background(StudioKeyShortcutMonitor(actions: [
+            "s": splitAtPlayhead,
+            "0": backToStart
+        ]))
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .top) {
             Rectangle()
@@ -1938,6 +1947,7 @@ private struct StudioTimelineEditor: View {
                 model.splitClip(at: model.outputTime(forDisplayTime: time))
             },
             onDelete: { deleteSelection() },
+            onRemoveSkipped: { model.removeSelectedSkippedClip() },
             onTrim: { model.trimClip($0) },
             onDisplayTimelineChange: { timeline in
                 trimDisplayTimeline = timeline
@@ -2129,15 +2139,26 @@ private struct StudioTimelineEditor: View {
         }
     }
 
+    /// Splits the selected audio clip, or the video when no audio clip is
+    /// selected.
+    private func splitAtPlayhead() {
+        if model.selectedAudioClipID != nil {
+            model.splitSelectedAudioClip(at: model.displayTime(forOutputTime: model.currentTime))
+        } else {
+            model.splitClip(at: model.currentTime)
+        }
+    }
+
+    private func backToStart() {
+        model.pause()
+        model.seek(to: 0)
+    }
+
     private var editControls: some View {
         HStack(spacing: 6) {
             StudioTransportTray {
-                timelineButton("Split at Playhead (⌘B)", systemImage: "scissors") {
-                    if model.selectedAudioClipID != nil {
-                        model.splitSelectedAudioClip(at: model.displayTime(forOutputTime: model.currentTime))
-                    } else {
-                        model.splitClip(at: model.currentTime)
-                    }
+                timelineButton("Split at Playhead (S or ⌘B)", systemImage: "scissors") {
+                    splitAtPlayhead()
                 }
                 .keyboardShortcut("b", modifiers: .command)
 
@@ -2188,9 +2209,8 @@ private struct StudioTimelineEditor: View {
                 .fixedSize()
 
             HStack(spacing: 4) {
-                timelineButton("Back to Start", systemImage: "backward.end.fill") {
-                    model.pause()
-                    model.seek(to: 0)
+                timelineButton("Back to Start (0)", systemImage: "backward.end.fill") {
+                    backToStart()
                 }
 
                 Button {
@@ -2363,7 +2383,7 @@ private struct StudioAudioWaveformLane: View {
                         }
                         let sourceTime = clip.sourceTime(at: editorTime)
                         let sourcePeak = min(max(waveform.peak(at: sourceTime), 0), 1)
-                        let adjustedPeak = min(sourcePeak * gain, 1)
+                        let adjustedPeak = min(sourcePeak * gain * Float(pow(10, clip.gainDB / 20)), 1)
                         let sourceHeight = max(CGFloat(sourcePeak) * maximumHeight, 0.5)
                         let adjustedHeight = max(CGFloat(adjustedPeak) * maximumHeight, 0.5)
 
@@ -2650,6 +2670,57 @@ private struct PlayheadCrownShape: Shape {
         )
         path.closeSubpath()
         return path
+    }
+}
+
+/// Single-key Studio shortcuts (S to split, 0 to go to the start) that work
+/// anywhere in the window, even after an inspector control takes focus.
+/// Typing in a text field is left alone.
+private struct StudioKeyShortcutMonitor: NSViewRepresentable {
+    let actions: [String: () -> Void]
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.actions = actions
+        return view
+    }
+
+    func updateNSView(_ nsView: MonitorView, context: Context) {
+        nsView.actions = actions
+    }
+
+    final class MonitorView: NSView {
+        var actions: [String: () -> Void] = [:]
+        private var eventMonitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            removeEventMonitor()
+            guard window != nil else { return }
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        deinit {
+            removeEventMonitor()
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard let window, event.window === window,
+                  event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                  let key = event.charactersIgnoringModifiers?.lowercased(),
+                  let action = actions[key],
+                  !(window.firstResponder is NSText) else { return event }
+            if !event.isARepeat { action() }
+            return nil
+        }
+
+        private func removeEventMonitor() {
+            guard let eventMonitor else { return }
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
     }
 }
 
@@ -3811,7 +3882,8 @@ private struct StudioInspector: View {
 
     private func selectedAudioControls(for track: RecordingAudioTrack) -> some View {
         let recordedAudioIsActive = model.replacementAudio == nil
-        let gainDB = model.audioGainDB(for: track.kind)
+        let editsClip = model.volumeEditsClip(for: track.kind)
+        let gainDB = model.volumeGainDB(for: track.kind)
         return VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
             if let clip = model.selectedAudioClip {
                 HStack(spacing: 8) {
@@ -3825,7 +3897,7 @@ private struct StudioInspector: View {
                 .font(.inspectorLabel)
                 .foregroundStyle(.secondary)
 
-                Text("Drag the clip to move it. Drag either white edge to trim. Split with T, or delete it to leave silence.")
+                Text("Drag the clip to move it. Drag either white edge to trim. Split at the playhead with S, or delete it to leave silence.")
                     .font(.inspectorLabel)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3834,10 +3906,10 @@ private struct StudioInspector: View {
             }
 
             InspectorSlider(
-                "Volume",
+                editsClip ? "Clip Volume" : "Volume",
                 value: Binding(
-                    get: { CGFloat(model.audioGainDB(for: track.kind)) },
-                    set: { model.setAudioGainDB(Double($0), for: track.kind) }
+                    get: { CGFloat(model.volumeGainDB(for: track.kind)) },
+                    set: { model.setVolumeGainDB(Double($0), for: track.kind) }
                 ),
                 range: CGFloat(RecordingAudioGainLimits.minimumDB)...CGFloat(RecordingAudioGainLimits.maximumDB),
                 format: .audioVolumePercent()
@@ -3845,7 +3917,7 @@ private struct StudioInspector: View {
             .disabled(!recordedAudioIsActive)
 
             HStack(spacing: 8) {
-                Text("100% = original")
+                Text(editsClip ? "100% = track volume" : "100% = original")
                 Spacer(minLength: 8)
                 Text(InspectorValueFormat.decibels().displayString(for: CGFloat(gainDB)))
                     .monospacedDigit()
@@ -3860,15 +3932,17 @@ private struct StudioInspector: View {
                 .disabled(!recordedAudioIsActive || track.waveform == nil)
 
                 InspectorActionButton("Reset", systemImage: "arrow.counterclockwise") {
-                    model.resetAudioGain(for: track.kind)
+                    model.setVolumeGainDB(0, for: track.kind)
                 }
-                .disabled(!recordedAudioIsActive || model.audioGainDB(for: track.kind) == 0)
+                .disabled(!recordedAudioIsActive || gainDB == 0)
             }
 
             Text(
-                recordedAudioIsActive
-                    ? "Auto Adjust sets one level for the whole track. It ignores silence and does not duck other audio."
-                    : "The replacement soundtrack is active, so recorded-track volume is bypassed."
+                !recordedAudioIsActive
+                    ? "The replacement soundtrack is active, so recorded-track volume is bypassed."
+                    : editsClip
+                    ? "Clip Volume changes only the selected clip. Auto Adjust still sets the whole track."
+                    : "Auto Adjust sets one level for the whole track. It ignores silence and does not duck other audio."
             )
             .font(.inspectorLabel)
             .foregroundStyle(.secondary)

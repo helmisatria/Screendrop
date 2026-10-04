@@ -253,6 +253,8 @@ final class RecordingStudioModel {
     private var zoomEditSnapshot: [ZoomCue]?
     private var customizedAudioTrackKinds: Set<RecordingAudioTrackKind> = []
     private var audioClipEditSnapshot: AudioClipEditState?
+    private var volumeUndoKey: String?
+    private var volumeUndoReset: Task<Void, Never>?
     /// The document as of the last explicit save. Everything the user does
     /// after that lives in memory and in the autosaved draft until they save
     /// again, which is what makes the close prompt meaningful.
@@ -1091,14 +1093,82 @@ final class RecordingStudioModel {
 
     func setAudioGainDB(_ gainDB: Double, for kind: RecordingAudioTrackKind) {
         let gainDB = Self.clampedAudioGain(gainDB)
-        switch kind {
-        case .system:
-            guard abs(systemAudioGainDB - gainDB) > 0.000_1 else { return }
-            systemAudioGainDB = gainDB
-        case .microphone:
-            guard abs(microphoneAudioGainDB - gainDB) > 0.000_1 else { return }
-            microphoneAudioGainDB = gainDB
+        let previous = audioGainDB(for: kind)
+        guard abs(previous - gainDB) > 0.000_1 else { return }
+        groupVolumeUndo(key: "track-\(kind.rawValue)") {
+            registerUndo("Change Volume") { $0.restoreAudioGain(previous, for: kind) }
         }
+        storeAudioGain(gainDB, for: kind)
+    }
+
+    private func restoreAudioGain(_ gainDB: Double, for kind: RecordingAudioTrackKind) {
+        let current = audioGainDB(for: kind)
+        registerUndo("Change Volume") { $0.restoreAudioGain(current, for: kind) }
+        storeAudioGain(gainDB, for: kind)
+    }
+
+    private func storeAudioGain(_ gainDB: Double, for kind: RecordingAudioTrackKind) {
+        switch kind {
+        case .system: systemAudioGainDB = gainDB
+        case .microphone: microphoneAudioGainDB = gainDB
+        }
+        applyRecordedAudioMix()
+        scheduleProjectSave()
+    }
+
+    /// A slider drag sends many small changes; the first one in a burst
+    /// registers the undo step, so one drag undoes as one change.
+    private func groupVolumeUndo(key: String, register: () -> Void) {
+        if volumeUndoKey != key {
+            volumeUndoKey = key
+            register()
+        }
+        volumeUndoReset?.cancel()
+        volumeUndoReset = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            self?.volumeUndoKey = nil
+        }
+    }
+
+    /// Once a track has more than one clip, whether split by hand or by
+    /// following video cuts, the volume control edits the selected clip.
+    private func volumeClipID(for kind: RecordingAudioTrackKind) -> UUID? {
+        guard selectedAudioTrackKind == kind,
+              let selectedAudioClipID,
+              let edit = audioTrackEdits.first(where: { $0.kind == kind }),
+              edit.clips.count > 1,
+              edit.clip(id: selectedAudioClipID) != nil else { return nil }
+        return selectedAudioClipID
+    }
+
+    func volumeEditsClip(for kind: RecordingAudioTrackKind) -> Bool {
+        volumeClipID(for: kind) != nil
+    }
+
+    func volumeGainDB(for kind: RecordingAudioTrackKind) -> Double {
+        guard let id = volumeClipID(for: kind) else { return audioGainDB(for: kind) }
+        return audioTrackEdits.first { $0.kind == kind }?.clip(id: id)?.gainDB ?? 0
+    }
+
+    func setVolumeGainDB(_ gainDB: Double, for kind: RecordingAudioTrackKind) {
+        guard let id = volumeClipID(for: kind),
+              let index = audioTrackEdits.firstIndex(where: { $0.kind == kind }),
+              var clip = audioTrackEdits[index].clip(id: id) else {
+            setAudioGainDB(gainDB, for: kind)
+            return
+        }
+        let gainDB = Self.clampedAudioGain(gainDB)
+        guard abs(clip.gainDB - gainDB) > 0.000_1 else { return }
+        let previous = audioClipEditState
+        groupVolumeUndo(key: "clip-\(id.uuidString)") {
+            registerUndo("Change Clip Volume") { $0.restoreAudioClipEdit(previous, actionName: "Change Clip Volume") }
+        }
+        clip.gainDB = gainDB
+        audioTrackEdits[index] = audioTrackEdits[index].replacing(clip)
+        // Clip volume is an audio edit, so the track keeps its clips (and
+        // saves them) instead of being rebuilt from later video edits.
+        customizedAudioTrackKinds.insert(kind)
         applyRecordedAudioMix()
         scheduleProjectSave()
     }
@@ -1114,15 +1184,13 @@ final class RecordingStudioModel {
 
     func autoBalanceRecordedAudio() {
         guard canAutoBalanceRecordedAudio else { return }
+        volumeUndoKey = nil
+        // Both tracks change in one event, so their undo steps group as one.
         for track in recordedAudioTracks {
             guard let gainDB = track.waveform?.suggestedGainDB else { continue }
-            switch track.kind {
-            case .system: systemAudioGainDB = Self.clampedAudioGain(gainDB)
-            case .microphone: microphoneAudioGainDB = Self.clampedAudioGain(gainDB)
-            }
+            setAudioGainDB(gainDB, for: track.kind)
         }
-        applyRecordedAudioMix()
-        scheduleProjectSave()
+        volumeUndoKey = nil
     }
 
     func resetAudioGain(for kind: RecordingAudioTrackKind) {
@@ -1138,6 +1206,7 @@ final class RecordingStudioModel {
 
     func undo() {
         guard editUndoManager.canUndo else { return }
+        volumeUndoKey = nil
         pause()
         editUndoManager.undo()
         undoRevision &+= 1
@@ -1145,6 +1214,7 @@ final class RecordingStudioModel {
 
     func redo() {
         guard editUndoManager.canRedo else { return }
+        volumeUndoKey = nil
         pause()
         editUndoManager.redo()
         undoRevision &+= 1
@@ -1175,14 +1245,48 @@ final class RecordingStudioModel {
     }
 
     func trimClip(_ replacement: RecordingClipSegment) {
-        let next = clipTimeline.replacing(replacement)
-        guard next != clipTimeline else { return }
+        let next = skipEdit.trimming(replacement)
         applyClipTimeline(
-            next,
+            next.playable,
             selectedID: replacement.id,
-            playheadTime: min(currentTime, next.duration),
-            actionName: "Trim Clip"
+            playheadTime: min(currentTime, next.playable.duration),
+            actionName: "Trim Clip",
+            skipped: next.skipped
         )
+    }
+
+    func removeSelectedSkippedClip() {
+        guard selectedClipIsSkipped, let selectedClipID else { return }
+        removeSkippedClips([selectedClipID], actionName: "Remove Skipped Clip")
+    }
+
+    func removeAllSkippedClips() {
+        removeSkippedClips(nil, actionName: "Remove Skipped Clips")
+    }
+
+    /// Output stays the same; only the hidden footage leaves the timeline.
+    /// Edited audio lives in display time, so it moves with the clips.
+    private func removeSkippedClips(_ ids: Set<UUID>?, actionName: String) {
+        guard !skippedClips.isEmpty else { return }
+        if isPreviewingSkippedClip { endTrimPreview() }
+        let current = skipEdit
+        let next = current.removingSkipped(ids)
+        let remapped = current.remappingAudio(audioTrackEdits, to: next.display)
+        // A removed selection moves to the kept clip that followed it.
+        let selection = selectedClip.flatMap { clip in
+            next.display.segments.contains { $0.id == clip.id } ? clip.id
+                : (next.display.segments.first { $0.sourceStart >= clip.sourceEnd } ?? next.display.segments.last)?.id
+        }
+        applyClipTimeline(next.playable, selectedID: selection, playheadTime: currentTime,
+                          actionName: actionName, skipped: next.skipped)
+        // Captured after the timeline change so only customized tracks count
+        // as an audio edit; the timeline's undo restores the others.
+        let previousAudio = audioClipEditState
+        audioTrackEdits = audioTrackEdits.map { edit in
+            guard customizedAudioTrackKinds.contains(edit.kind) else { return edit }
+            return remapped.first { $0.kind == edit.kind } ?? edit
+        }
+        finishAudioClipEdit(from: previousAudio, actionName: actionName)
     }
 
     func setClipSpeed(_ speed: Double, forClipID id: UUID) {

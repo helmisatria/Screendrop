@@ -16,19 +16,38 @@ nonisolated struct RecordingAudioClipSegment: Codable, Equatable, Identifiable, 
     var sourceEnd: TimeInterval
     var timelineStart: TimeInterval
     var speed: Double
+    /// Volume for this clip only, added on top of the track's volume.
+    var gainDB: Double
 
     init(
         id: UUID = UUID(),
         sourceStart: TimeInterval,
         sourceEnd: TimeInterval,
         timelineStart: TimeInterval,
-        speed: Double = 1
+        speed: Double = 1,
+        gainDB: Double = 0
     ) {
         self.id = id
         self.sourceStart = sourceStart
         self.sourceEnd = sourceEnd
         self.timelineStart = timelineStart
         self.speed = speed
+        self.gainDB = gainDB
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sourceStart, sourceEnd, timelineStart, speed, gainDB
+    }
+
+    // Projects saved before per-clip volume have no gainDB.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        sourceStart = try container.decode(TimeInterval.self, forKey: .sourceStart)
+        sourceEnd = try container.decode(TimeInterval.self, forKey: .sourceEnd)
+        timelineStart = try container.decode(TimeInterval.self, forKey: .timelineStart)
+        speed = try container.decode(Double.self, forKey: .speed)
+        gainDB = try container.decodeIfPresent(Double.self, forKey: .gainDB) ?? 0
     }
 
     var sourceDuration: TimeInterval {
@@ -153,7 +172,8 @@ nonisolated struct RecordingAudioTrackEdit: Codable, Equatable, Identifiable, Se
             sourceStart: splitSourceTime,
             sourceEnd: clip.sourceEnd,
             timelineStart: timelineTime,
-            speed: clip.speed
+            speed: clip.speed,
+            gainDB: clip.gainDB
         )
 
         var result = self

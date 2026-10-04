@@ -50,6 +50,38 @@ nonisolated struct RecordingSkippedClips: Equatable, Sendable {
                     skipped: skipped + [clip])
     }
 
+    /// A kept clip's trim wins over skipped footage: skipped neighbours it
+    /// now covers shrink, and any sliver shorter than a clip disappears.
+    func trimming(_ replacement: RecordingClipSegment) -> Self {
+        Self(playable: playable.replacing(replacement),
+             skipped: Self.carving(replacement.sourceStart...replacement.sourceEnd, from: skipped))
+    }
+
+    /// Turns skipped clips into ordinary trims, so they leave the timeline.
+    /// Passing nil removes every skipped clip.
+    func removingSkipped(_ ids: Set<UUID>? = nil) -> Self {
+        Self(playable: playable, skipped: ids.map { ids in skipped.filter { !ids.contains($0.id) } } ?? [])
+    }
+
+    static func carving(_ range: ClosedRange<TimeInterval>, from clips: [RecordingClipSegment]) -> [RecordingClipSegment] {
+        clips.flatMap { clip -> [RecordingClipSegment] in
+            guard range.upperBound > clip.sourceStart, range.lowerBound < clip.sourceEnd else { return [clip] }
+            var pieces: [RecordingClipSegment] = []
+            if range.lowerBound - clip.sourceStart >= RecordingClipSegment.minimumDuration {
+                var head = clip
+                head.sourceEnd = range.lowerBound
+                pieces.append(head)
+            }
+            if clip.sourceEnd - range.upperBound >= RecordingClipSegment.minimumDuration {
+                var tail = clip
+                tail.id = pieces.isEmpty ? clip.id : UUID()
+                tail.sourceStart = range.upperBound
+                pieces.append(tail)
+            }
+            return pieces
+        }
+    }
+
     func outputTime(forDisplayTime time: TimeInterval) -> TimeInterval {
         let source = display.sourceTime(at: time)
         if let exact = playable.editorTime(forSourceTime: source) { return exact }
@@ -67,19 +99,26 @@ nonisolated struct RecordingSkippedClips: Equatable, Sendable {
     /// independent audio cuts. Only their audible slices enter the output.
     func outputAudio(_ edits: [RecordingAudioTrackEdit]) -> [RecordingAudioTrackEdit] {
         guard !skipped.isEmpty else { return edits }
-        return edits.map { edit in
+        return remappingAudio(edits, to: playable)
+    }
+
+    /// Moves display-time audio onto `target`, a timeline whose clips are a
+    /// subset of the display clips. Audio under dropped clips goes with them.
+    func remappingAudio(_ edits: [RecordingAudioTrackEdit], to target: RecordingClipTimeline) -> [RecordingAudioTrackEdit] {
+        edits.map { edit in
             var clips: [RecordingAudioClipSegment] = []
             for audio in edit.clips {
-                for video in playable.segments {
+                for video in target.segments {
                     guard let visible = display.editorRange(for: video.id),
-                          let output = playable.editorRange(for: video.id) else { continue }
+                          let output = target.editorRange(for: video.id) else { continue }
                     let start = max(audio.timelineStart, visible.lowerBound)
                     let end = min(audio.timelineEnd, visible.upperBound)
                     guard end - start > 0.000_001 else { continue }
                     clips.append(RecordingAudioClipSegment(
                         id: audio.id,
                         sourceStart: audio.sourceTime(at: start), sourceEnd: audio.sourceTime(at: end),
-                        timelineStart: output.lowerBound + start - visible.lowerBound, speed: audio.speed
+                        timelineStart: output.lowerBound + start - visible.lowerBound, speed: audio.speed,
+                        gainDB: audio.gainDB
                     ))
                 }
             }

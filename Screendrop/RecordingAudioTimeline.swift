@@ -293,19 +293,21 @@ nonisolated enum RecordingAudioGainMix {
             guard abs(gainDB) > 0.000_1 || edit != nil else { return nil }
 
             let input = AVMutableAudioMixInputParameters(track: track)
-            let clipVolume: Float
-            if gainDB <= 0 {
-                clipVolume = Float(pow(10, gainDB / 20))
-            } else {
-                clipVolume = 1
-            }
-            if gainDB > 0, let tap = makeGainTap(linearGain: Float(pow(10, gainDB / 20))) {
-                input.audioTapProcessor = tap
-            }
             if let edit {
+                // Each clip adds its own gain. Cuts go through the volume
+                // ramps; boosts go through a tap that follows the timeline.
+                let clips = edit.clips.sorted(by: { $0.timelineStart < $1.timelineStart })
+                let boosts = clips.compactMap { clip -> RecordingAudioGainTapContext.Boost? in
+                    let clipDB = gainDB + clip.gainDB
+                    guard clipDB > 0 else { return nil }
+                    return .init(start: clip.timelineStart, end: clip.timelineEnd, gain: Float(pow(10, clipDB / 20)))
+                }
+                if !boosts.isEmpty, let tap = makeGainTap(.init(gain: 1, boosts: boosts)) {
+                    input.audioTapProcessor = tap
+                }
                 input.setVolume(0, at: .zero)
                 var coveredUntil: TimeInterval = 0
-                for clip in edit.clips.sorted(by: { $0.timelineStart < $1.timelineStart }) {
+                for clip in clips {
                     if clip.timelineStart > coveredUntil {
                         setConstantVolume(
                             0,
@@ -313,8 +315,9 @@ nonisolated enum RecordingAudioGainMix {
                             on: input
                         )
                     }
+                    let clipDB = gainDB + clip.gainDB
                     setConstantVolume(
-                        clipVolume,
+                        clipDB <= 0 ? Float(pow(10, clipDB / 20)) : 1,
                         range: clip.timelineStart..<clip.timelineEnd,
                         on: input
                     )
@@ -329,7 +332,9 @@ nonisolated enum RecordingAudioGainMix {
                     )
                 }
             } else if gainDB <= 0 {
-                input.setVolume(clipVolume, at: .zero)
+                input.setVolume(Float(pow(10, gainDB / 20)), at: .zero)
+            } else if let tap = makeGainTap(.init(gain: Float(pow(10, gainDB / 20)))) {
+                input.audioTapProcessor = tap
             }
             return input
         }
@@ -361,8 +366,8 @@ nonisolated enum RecordingAudioGainMix {
         )
     }
 
-    private static func makeGainTap(linearGain: Float) -> MTAudioProcessingTap? {
-        let context = Unmanaged.passRetained(RecordingAudioGainTapContext(gain: linearGain))
+    private static func makeGainTap(_ gainContext: RecordingAudioGainTapContext) -> MTAudioProcessingTap? {
+        let context = Unmanaged.passRetained(gainContext)
         var callbacks = MTAudioProcessingTapCallbacks(
             version: kMTAudioProcessingTapCallbacksVersion_0,
             clientInfo: context.toOpaque(),
@@ -388,11 +393,27 @@ nonisolated enum RecordingAudioGainMix {
 }
 
 nonisolated private final class RecordingAudioGainTapContext {
-    let gain: Float
-    var format = AudioStreamBasicDescription()
+    /// A boosted span in the mix's timeline, in seconds.
+    struct Boost {
+        let start: TimeInterval
+        let end: TimeInterval
+        let gain: Float
+    }
 
-    init(gain: Float) {
+    /// Applied wherever no boost covers the audio.
+    let gain: Float
+    let boosts: [Boost]
+    var format = AudioStreamBasicDescription()
+    /// Fallback position when the tap is not given a time range.
+    var nextFrame: Int64 = 0
+
+    init(gain: Float, boosts: [Boost] = []) {
         self.gain = gain
+        self.boosts = boosts
+    }
+
+    func gain(at time: TimeInterval) -> Float {
+        boosts.first { time >= $0.start && time < $0.end }?.gain ?? gain
     }
 }
 
@@ -415,7 +436,9 @@ nonisolated private func recordingAudioGainTapPrepare(
     processingFormat: UnsafePointer<AudioStreamBasicDescription>
 ) {
     let storage = MTAudioProcessingTapGetStorage(tap)
-    Unmanaged<RecordingAudioGainTapContext>.fromOpaque(storage).takeUnretainedValue().format = processingFormat.pointee
+    let context = Unmanaged<RecordingAudioGainTapContext>.fromOpaque(storage).takeUnretainedValue()
+    context.format = processingFormat.pointee
+    context.nextFrame = 0
 }
 
 nonisolated private func recordingAudioGainTapUnprepare(tap: MTAudioProcessingTap) {}
@@ -429,12 +452,13 @@ nonisolated private func recordingAudioGainTapProcess(
     flagsOut: UnsafeMutablePointer<MTAudioProcessingTapFlags>
 ) {
     var sourceFlags: MTAudioProcessingTapFlags = 0
+    var timeRange = CMTimeRange.invalid
     let status = MTAudioProcessingTapGetSourceAudio(
         tap,
         numberFrames,
         bufferListInOut,
         &sourceFlags,
-        nil,
+        &timeRange,
         numberFramesOut
     )
     guard status == noErr else { return }
@@ -443,27 +467,45 @@ nonisolated private func recordingAudioGainTapProcess(
     let storage = MTAudioProcessingTapGetStorage(tap)
     let context = Unmanaged<RecordingAudioGainTapContext>.fromOpaque(storage).takeUnretainedValue()
     let format = context.format
+    let frameCount = Int(numberFramesOut.pointee)
+    let sampleRate = format.mSampleRate > 0 ? format.mSampleRate : 48_000
+    let startTime = timeRange.isValid ? timeRange.start.seconds : Double(context.nextFrame) / sampleRate
+    context.nextFrame += Int64(frameCount)
     guard format.mFormatID == kAudioFormatLinearPCM else { return }
+
+    // Boosts only change at clip edges, so a fixed gain skips the lookup.
+    let constantGain: Float? = context.boosts.isEmpty ? context.gain : nil
+    func gain(atFrame frame: Int) -> Float {
+        constantGain ?? context.gain(at: startTime + Double(frame) / sampleRate)
+    }
 
     let buffers = UnsafeMutableAudioBufferListPointer(bufferListInOut)
     if format.mFormatFlags & kAudioFormatFlagIsFloat != 0, format.mBitsPerChannel == 32 {
         for buffer in buffers {
             guard let data = buffer.mData else { continue }
+            let channels = max(Int(buffer.mNumberChannels), 1)
             let count = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
             let samples = data.bindMemory(to: Float.self, capacity: count)
-            for index in 0..<count {
-                samples[index] = min(max(samples[index] * context.gain, -1), 1)
+            for frame in 0..<(count / channels) {
+                let frameGain = gain(atFrame: frame)
+                for index in (frame * channels)..<((frame + 1) * channels) {
+                    samples[index] = min(max(samples[index] * frameGain, -1), 1)
+                }
             }
         }
     } else if format.mFormatFlags & kAudioFormatFlagIsSignedInteger != 0,
               format.mBitsPerChannel == 16 {
         for buffer in buffers {
             guard let data = buffer.mData else { continue }
+            let channels = max(Int(buffer.mNumberChannels), 1)
             let count = Int(buffer.mDataByteSize) / MemoryLayout<Int16>.size
             let samples = data.bindMemory(to: Int16.self, capacity: count)
-            for index in 0..<count {
-                let amplified = Float(samples[index]) * context.gain
-                samples[index] = Int16(min(max(amplified, Float(Int16.min)), Float(Int16.max)))
+            for frame in 0..<(count / channels) {
+                let frameGain = gain(atFrame: frame)
+                for index in (frame * channels)..<((frame + 1) * channels) {
+                    let amplified = Float(samples[index]) * frameGain
+                    samples[index] = Int16(min(max(amplified, Float(Int16.min)), Float(Int16.max)))
+                }
             }
         }
     }

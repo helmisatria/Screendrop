@@ -22,6 +22,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
     let onHover: (TimeInterval?) -> Void
     let onSplit: (TimeInterval) -> Void
     let onDelete: () -> Void
+    let onRemoveSkipped: () -> Void
     let onTrim: (RecordingClipSegment) -> Void
     let onDisplayTimelineChange: (RecordingClipTimeline?) -> Void
     /// Pinch or ⌘-scroll over the lane: `(factor, anchor editor time)`. The
@@ -38,6 +39,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onHover: onHover,
             onSplit: onSplit,
             onDelete: onDelete,
+            onRemoveSkipped: onRemoveSkipped,
             onTrim: onTrim,
             onDisplayTimelineChange: onDisplayTimelineChange,
             onZoom: onZoom,
@@ -57,6 +59,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onHover: onHover,
             onSplit: onSplit,
             onDelete: onDelete,
+            onRemoveSkipped: onRemoveSkipped,
             onTrim: onTrim,
             onDisplayTimelineChange: onDisplayTimelineChange,
             onZoom: onZoom,
@@ -79,6 +82,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
         private var onHover: (TimeInterval?) -> Void
         private var onSplit: (TimeInterval) -> Void
         private var onDelete: () -> Void
+        private var onRemoveSkipped: () -> Void
         private var onTrim: (RecordingClipSegment) -> Void
         private var onDisplayTimelineChange: (RecordingClipTimeline?) -> Void
         private var onZoom: (Double, TimeInterval) -> Void
@@ -90,6 +94,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onHover: @escaping (TimeInterval?) -> Void,
             onSplit: @escaping (TimeInterval) -> Void,
             onDelete: @escaping () -> Void,
+            onRemoveSkipped: @escaping () -> Void,
             onTrim: @escaping (RecordingClipSegment) -> Void,
             onDisplayTimelineChange: @escaping (RecordingClipTimeline?) -> Void,
             onZoom: @escaping (Double, TimeInterval) -> Void,
@@ -100,6 +105,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             self.onHover = onHover
             self.onSplit = onSplit
             self.onDelete = onDelete
+            self.onRemoveSkipped = onRemoveSkipped
             self.onTrim = onTrim
             self.onDisplayTimelineChange = onDisplayTimelineChange
             self.onZoom = onZoom
@@ -111,6 +117,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             onHover: @escaping (TimeInterval?) -> Void,
             onSplit: @escaping (TimeInterval) -> Void,
             onDelete: @escaping () -> Void,
+            onRemoveSkipped: @escaping () -> Void,
             onTrim: @escaping (RecordingClipSegment) -> Void,
             onDisplayTimelineChange: @escaping (RecordingClipTimeline?) -> Void,
             onZoom: @escaping (Double, TimeInterval) -> Void,
@@ -120,6 +127,7 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             self.onHover = onHover
             self.onSplit = onSplit
             self.onDelete = onDelete
+            self.onRemoveSkipped = onRemoveSkipped
             self.onTrim = onTrim
             self.onDisplayTimelineChange = onDisplayTimelineChange
             self.onZoom = onZoom
@@ -139,6 +147,9 @@ struct RecordingClipTimelineView: NSViewRepresentable {
             }
             view.deleteRequested = { [weak self] in
                 self?.onDelete()
+            }
+            view.removeSkippedRequested = { [weak self] in
+                self?.onRemoveSkipped()
             }
             view.trimDidCommit = { [weak self] clip in
                 self?.onTrim(clip)
@@ -164,6 +175,7 @@ final class RecordingClipTimelineControl: NSView {
     var hoverTimeDidChange: ((TimeInterval?) -> Void)?
     var splitRequested: ((TimeInterval) -> Void)?
     var deleteRequested: (() -> Void)?
+    var removeSkippedRequested: (() -> Void)?
     var trimDidCommit: ((RecordingClipSegment) -> Void)?
     var displayTimelineDidChange: ((RecordingClipTimeline?) -> Void)?
     var zoomRequested: ((Double, TimeInterval) -> Void)?
@@ -445,10 +457,6 @@ final class RecordingClipTimelineControl: NSView {
             splitRequested?(hoverTime)
             return
         }
-        if modifiers.isEmpty, characters == "s" {
-            splitRequested?(playheadTime)
-            return
-        }
         if modifiers.subtracting([.shift, .numericPad, .function]).isEmpty,
            event.keyCode == 123 || event.keyCode == 124 {
             let magnitude = modifiers.contains(.shift) ? Metrics.coarseStep : Metrics.frameStep
@@ -495,12 +503,32 @@ final class RecordingClipTimelineControl: NSView {
         delete.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
         delete.isEnabled = skippedClipIDs.contains(location.segmentID) || timeline.segments.count - skippedClipIDs.count > 1
         menu.addItem(delete)
+
+        if skippedClipIDs.contains(location.segmentID) {
+            let remove = NSMenuItem(
+                title: "Remove Skipped Clip",
+                action: #selector(removeSkippedFromContextMenu),
+                keyEquivalent: ""
+            )
+            remove.target = self
+            remove.image = NSImage(systemSymbolName: "xmark.bin", accessibilityDescription: nil)
+            menu.addItem(remove)
+        }
         return menu
     }
 
     @objc private func splitFromContextMenu() {
         guard let contextTime else { return }
         splitRequested?(contextTime)
+    }
+
+    @objc private func removeSkippedFromContextMenu() {
+        guard let contextClipID else { return }
+        if selectedClipID != contextClipID {
+            selectedClipID = contextClipID
+            selectionDidChange?(contextClipID)
+        }
+        removeSkippedRequested?()
     }
 
     @objc private func deleteFromContextMenu() {
@@ -550,7 +578,7 @@ final class RecordingClipTimelineControl: NSView {
         guard let dragStartPoint,
               let startTimeline = dragStartTimeline,
               let original = dragStartClip,
-              let index = startTimeline.segments.firstIndex(where: { $0.id == clipID }) else {
+              startTimeline.segments.contains(where: { $0.id == clipID }) else {
             return
         }
 
@@ -569,10 +597,11 @@ final class RecordingClipTimelineControl: NSView {
                 * startTimeline.duration
             delta = editorDelta * original.speed
         }
-        let previousEnd = index > 0 ? startTimeline.segments[index - 1].sourceEnd : 0
-        let nextStart = index + 1 < startTimeline.segments.count
-            ? startTimeline.segments[index + 1].sourceStart
-            : sourceDuration
+        // Skipped neighbours don't stop the drag; the trim eats into them.
+        let kept = startTimeline.segments.filter { !skippedClipIDs.contains($0.id) }
+        let skipped = startTimeline.segments.filter { skippedClipIDs.contains($0.id) }
+        let previousEnd = kept.last { $0.sourceEnd <= original.sourceStart }?.sourceEnd ?? 0
+        let nextStart = kept.first { $0.sourceStart >= original.sourceEnd }?.sourceStart ?? sourceDuration
         var replacement = original
 
         switch edge {
@@ -587,7 +616,8 @@ final class RecordingClipTimelineControl: NSView {
                 min(original.sourceEnd + delta, nextStart)
             )
         }
-        timeline = startTimeline.replacing(replacement)
+        timeline = RecordingSkippedClips(playable: RecordingClipTimeline(segments: kept), skipped: skipped)
+            .trimming(replacement).display
         publishDisplayTimelineIfNeeded()
     }
 
