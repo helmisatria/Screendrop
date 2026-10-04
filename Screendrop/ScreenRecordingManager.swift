@@ -155,6 +155,7 @@ final class ScreenRecordingManager {
         guard Self.ensureScreenCapturePermission() else { return }
 
         let targetDisplayID = source.displayID ?? ActiveDisplayResolver.activeDisplayID(preferPointer: true) ?? CGMainDisplayID()
+        elapsedTime = 0
         state = .starting
         errorMessage = nil
         displayID = targetDisplayID
