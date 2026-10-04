@@ -253,6 +253,8 @@ final class RecordingStudioModel {
     private var zoomEditSnapshot: [ZoomCue]?
     private var customizedAudioTrackKinds: Set<RecordingAudioTrackKind> = []
     private var audioClipEditSnapshot: AudioClipEditState?
+    private var volumeUndoKey: String?
+    private var volumeUndoReset: Task<Void, Never>?
     /// The document as of the last explicit save. Everything the user does
     /// after that lives in memory and in the autosaved draft until they save
     /// again, which is what makes the close prompt meaningful.
@@ -1091,23 +1093,48 @@ final class RecordingStudioModel {
 
     func setAudioGainDB(_ gainDB: Double, for kind: RecordingAudioTrackKind) {
         let gainDB = Self.clampedAudioGain(gainDB)
+        let previous = audioGainDB(for: kind)
+        guard abs(previous - gainDB) > 0.000_1 else { return }
+        groupVolumeUndo(key: "track-\(kind.rawValue)") {
+            registerUndo("Change Volume") { $0.restoreAudioGain(previous, for: kind) }
+        }
+        storeAudioGain(gainDB, for: kind)
+    }
+
+    private func restoreAudioGain(_ gainDB: Double, for kind: RecordingAudioTrackKind) {
+        let current = audioGainDB(for: kind)
+        registerUndo("Change Volume") { $0.restoreAudioGain(current, for: kind) }
+        storeAudioGain(gainDB, for: kind)
+    }
+
+    private func storeAudioGain(_ gainDB: Double, for kind: RecordingAudioTrackKind) {
         switch kind {
-        case .system:
-            guard abs(systemAudioGainDB - gainDB) > 0.000_1 else { return }
-            systemAudioGainDB = gainDB
-        case .microphone:
-            guard abs(microphoneAudioGainDB - gainDB) > 0.000_1 else { return }
-            microphoneAudioGainDB = gainDB
+        case .system: systemAudioGainDB = gainDB
+        case .microphone: microphoneAudioGainDB = gainDB
         }
         applyRecordedAudioMix()
         scheduleProjectSave()
     }
 
-    /// Once a track is split, the volume control edits the selected clip
-    /// instead of the whole track.
+    /// A slider drag sends many small changes; the first one in a burst
+    /// registers the undo step, so one drag undoes as one change.
+    private func groupVolumeUndo(key: String, register: () -> Void) {
+        if volumeUndoKey != key {
+            volumeUndoKey = key
+            register()
+        }
+        volumeUndoReset?.cancel()
+        volumeUndoReset = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            self?.volumeUndoKey = nil
+        }
+    }
+
+    /// Once a track has more than one clip, whether split by hand or by
+    /// following video cuts, the volume control edits the selected clip.
     private func volumeClipID(for kind: RecordingAudioTrackKind) -> UUID? {
         guard selectedAudioTrackKind == kind,
-              customizedAudioTrackKinds.contains(kind),
               let selectedAudioClipID,
               let edit = audioTrackEdits.first(where: { $0.kind == kind }),
               edit.clips.count > 1,
@@ -1133,8 +1160,15 @@ final class RecordingStudioModel {
         }
         let gainDB = Self.clampedAudioGain(gainDB)
         guard abs(clip.gainDB - gainDB) > 0.000_1 else { return }
+        let previous = audioClipEditState
+        groupVolumeUndo(key: "clip-\(id.uuidString)") {
+            registerUndo("Change Clip Volume") { $0.restoreAudioClipEdit(previous, actionName: "Change Clip Volume") }
+        }
         clip.gainDB = gainDB
         audioTrackEdits[index] = audioTrackEdits[index].replacing(clip)
+        // Clip volume is an audio edit, so the track keeps its clips (and
+        // saves them) instead of being rebuilt from later video edits.
+        customizedAudioTrackKinds.insert(kind)
         applyRecordedAudioMix()
         scheduleProjectSave()
     }
@@ -1150,15 +1184,13 @@ final class RecordingStudioModel {
 
     func autoBalanceRecordedAudio() {
         guard canAutoBalanceRecordedAudio else { return }
+        volumeUndoKey = nil
+        // Both tracks change in one event, so their undo steps group as one.
         for track in recordedAudioTracks {
             guard let gainDB = track.waveform?.suggestedGainDB else { continue }
-            switch track.kind {
-            case .system: systemAudioGainDB = Self.clampedAudioGain(gainDB)
-            case .microphone: microphoneAudioGainDB = Self.clampedAudioGain(gainDB)
-            }
+            setAudioGainDB(gainDB, for: track.kind)
         }
-        applyRecordedAudioMix()
-        scheduleProjectSave()
+        volumeUndoKey = nil
     }
 
     func resetAudioGain(for kind: RecordingAudioTrackKind) {
@@ -1174,6 +1206,7 @@ final class RecordingStudioModel {
 
     func undo() {
         guard editUndoManager.canUndo else { return }
+        volumeUndoKey = nil
         pause()
         editUndoManager.undo()
         undoRevision &+= 1
@@ -1181,6 +1214,7 @@ final class RecordingStudioModel {
 
     func redo() {
         guard editUndoManager.canRedo else { return }
+        volumeUndoKey = nil
         pause()
         editUndoManager.redo()
         undoRevision &+= 1
