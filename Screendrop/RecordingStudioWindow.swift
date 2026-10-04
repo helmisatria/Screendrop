@@ -1715,9 +1715,14 @@ private struct StudioTimelineEditor: View {
                             else { model.previewSelectedSkippedClip() }
                         }
                         Button("Restore Clip") { model.deleteSelectedClip() }
+                        Button("Remove Skipped Clip") { model.removeSelectedSkippedClip() }
+                            .help("Drop this skipped footage from the timeline. Playback and export stay the same.")
+                    } else {
+                        Text("Delete toggles skip / restore")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("Delete toggles skip / restore")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Remove All Skipped") { model.removeAllSkippedClips() }
+                        .help("Drop every skipped section from the timeline. Playback and export stay the same.")
                 }
             }
             lanes
@@ -1938,6 +1943,7 @@ private struct StudioTimelineEditor: View {
                 model.splitClip(at: model.outputTime(forDisplayTime: time))
             },
             onDelete: { deleteSelection() },
+            onRemoveSkipped: { model.removeSelectedSkippedClip() },
             onTrim: { model.trimClip($0) },
             onDisplayTimelineChange: { timeline in
                 trimDisplayTimeline = timeline

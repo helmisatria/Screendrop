@@ -1185,6 +1185,40 @@ final class RecordingStudioModel {
         )
     }
 
+    func removeSelectedSkippedClip() {
+        guard selectedClipIsSkipped, let selectedClipID else { return }
+        removeSkippedClips([selectedClipID], actionName: "Remove Skipped Clip")
+    }
+
+    func removeAllSkippedClips() {
+        removeSkippedClips(nil, actionName: "Remove Skipped Clips")
+    }
+
+    /// Output stays the same; only the hidden footage leaves the timeline.
+    /// Edited audio lives in display time, so it moves with the clips.
+    private func removeSkippedClips(_ ids: Set<UUID>?, actionName: String) {
+        guard !skippedClips.isEmpty else { return }
+        if isPreviewingSkippedClip { endTrimPreview() }
+        let current = skipEdit
+        let next = current.removingSkipped(ids)
+        let remapped = current.remappingAudio(audioTrackEdits, to: next.display)
+        // A removed selection moves to the kept clip that followed it.
+        let selection = selectedClip.flatMap { clip in
+            next.display.segments.contains { $0.id == clip.id } ? clip.id
+                : (next.display.segments.first { $0.sourceStart >= clip.sourceEnd } ?? next.display.segments.last)?.id
+        }
+        applyClipTimeline(next.playable, selectedID: selection, playheadTime: currentTime,
+                          actionName: actionName, skipped: next.skipped)
+        // Captured after the timeline change so only customized tracks count
+        // as an audio edit; the timeline's undo restores the others.
+        let previousAudio = audioClipEditState
+        audioTrackEdits = audioTrackEdits.map { edit in
+            guard customizedAudioTrackKinds.contains(edit.kind) else { return edit }
+            return remapped.first { $0.kind == edit.kind } ?? edit
+        }
+        finishAudioClipEdit(from: previousAudio, actionName: actionName)
+    }
+
     func setClipSpeed(_ speed: Double, forClipID id: UUID) {
         guard let segment = clipTimeline.segments.first(where: { $0.id == id }) else { return }
         let clamped = min(max(speed, RecordingClipSegment.minimumSpeed), RecordingClipSegment.maximumSpeed)
