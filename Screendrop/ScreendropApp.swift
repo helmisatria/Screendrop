@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import ApplicationServices
 import UniformTypeIdentifiers
 import UserNotifications
 import Carbon
@@ -148,7 +149,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// itself - activating the app and never calling us back to reveal the
     /// file. `applicationDidFinishLaunching` is already too late.
     func applicationWillFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--diagnostics") {
+            printDiagnostics()
+            exit(0)
+        }
         UNUserNotificationCenter.current().delegate = RecordingExportNotificationDelegate.shared
+    }
+
+    private func printDiagnostics() {
+        #if DEBUG
+        let isDebugBuild = true
+        #else
+        let isDebugBuild = false
+        #endif
+        let requestAccessibility = CommandLine.arguments.contains("--request-accessibility")
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: requestAccessibility]
+        let diagnostics: [String: Any] = [
+            "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
+            "appPath": Bundle.main.bundlePath,
+            "debugBuild": isDebugBuild,
+            "captionsEnabled": FeatureSettings.shared.isEnabled(.captions),
+            "accessibilityTrusted": AXIsProcessTrustedWithOptions(options as CFDictionary),
+            "inputMonitoringGranted": CGPreflightListenEventAccess(),
+            "screenRecordingGranted": CGPreflightScreenCaptureAccess()
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: diagnostics, options: [.prettyPrinted, .sortedKeys]),
+           let output = String(data: data, encoding: .utf8) {
+            print(output)
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
