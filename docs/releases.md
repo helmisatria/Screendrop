@@ -30,6 +30,9 @@ permissions. Builds and diagnostics do not prove every capture/edit interaction.
 
 `.github/workflows/build.yml` builds universal Release on pushes and pull
 requests to `helmisatria/Screendrop`. Its unsigned ZIP is for inspection.
+Both workflows use macOS 26 runners with Xcode 26.3; the app still targets
+macOS 15.6. The macOS 15 runner's asset compiler failed with missing CoreMedia
+symbols, so it is not the release build host.
 
 `.github/workflows/release.yml` runs on version tags (`v0.34.1`) or manually from
 main with an existing tag. The commit must belong to own main, the tag must match
