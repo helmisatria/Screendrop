@@ -22,7 +22,7 @@ struct RecordingCameraBubbleSettings: Equatable {
 }
 
 struct RecordingEditDocument: Codable, Equatable {
-    var formatVersion = 8
+    var formatVersion = 9
     var style: StoredRecordingStudioStyle
     var zoomEnabled: Bool
     var zoomCues: [ZoomCue]
@@ -49,6 +49,7 @@ struct RecordingEditDocument: Codable, Equatable {
     var subtitleVerticalPosition: Double?
     var subtitleFontScale: Double?
     var subtitleWordHighlight: Bool?
+    var subtitleAppearance: StoredCaptionAppearance?
     /// Raw ExportAspectPreset value; optional so older projects keep the
     /// original aspect.
     var exportAspect: String?
@@ -92,6 +93,7 @@ struct RecordingEditDocument: Codable, Equatable {
         case subtitleVerticalPosition
         case subtitleFontScale
         case subtitleWordHighlight
+        case subtitleAppearance
         case exportAspect
         case exportAspectMode
         case videoCropRect
@@ -158,6 +160,7 @@ struct RecordingEditDocument: Codable, Equatable {
         subtitleVerticalPosition = subtitleStyle?.verticalPosition
         subtitleFontScale = subtitleStyle?.fontScale
         subtitleWordHighlight = subtitleStyle?.highlightsSpokenWord
+        subtitleAppearance = subtitleStyle.map(StoredCaptionAppearance.init)
         self.exportAspect = exportAspect.map(\.rawValue)
         self.exportAspectMode = exportAspectMode.map(\.rawValue)
         self.videoCropRect = videoCropRect
@@ -185,6 +188,7 @@ struct RecordingEditDocument: Codable, Equatable {
         if let subtitleWordHighlight {
             style.highlightsSpokenWord = subtitleWordHighlight
         }
+        subtitleAppearance?.apply(to: &style)
         return style
     }
 
@@ -241,6 +245,7 @@ struct RecordingEditDocument: Codable, Equatable {
         )
         subtitleFontScale = try container.decodeIfPresent(Double.self, forKey: .subtitleFontScale)
         subtitleWordHighlight = try container.decodeIfPresent(Bool.self, forKey: .subtitleWordHighlight)
+        subtitleAppearance = try container.decodeIfPresent(StoredCaptionAppearance.self, forKey: .subtitleAppearance)
         exportAspect = try container.decodeIfPresent(String.self, forKey: .exportAspect)
         exportAspectMode = try container.decodeIfPresent(String.self, forKey: .exportAspectMode)
         videoCropRect = try container.decodeIfPresent(CGRect.self, forKey: .videoCropRect)
@@ -287,6 +292,7 @@ struct RecordingEditDocument: Codable, Equatable {
         try container.encodeIfPresent(subtitleVerticalPosition, forKey: .subtitleVerticalPosition)
         try container.encodeIfPresent(subtitleFontScale, forKey: .subtitleFontScale)
         try container.encodeIfPresent(subtitleWordHighlight, forKey: .subtitleWordHighlight)
+        try container.encodeIfPresent(subtitleAppearance, forKey: .subtitleAppearance)
         try container.encodeIfPresent(exportAspect, forKey: .exportAspect)
         try container.encodeIfPresent(exportAspectMode, forKey: .exportAspectMode)
         try container.encodeIfPresent(videoCropRect, forKey: .videoCropRect)

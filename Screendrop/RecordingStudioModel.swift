@@ -1129,6 +1129,13 @@ final class RecordingStudioModel {
         setAudioGainDB(0, for: kind)
     }
 
+    func setSubtitleStyle(_ next: SubtitleBarStyle) {
+        guard next != subtitleStyle else { return }
+        let previous = subtitleStyle
+        registerUndo("Caption Style") { $0.setSubtitleStyle(previous) }
+        subtitleStyle = next
+    }
+
     func undo() {
         guard editUndoManager.canUndo else { return }
         pause()

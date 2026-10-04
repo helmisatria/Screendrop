@@ -168,6 +168,9 @@ nonisolated final class RecordingStudioExporter: @unchecked Sendable {
         _ configuration: Configuration,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
+        if configuration.subtitleTimeline != nil {
+            try await RecordingGoogleFonts.shared.prepare(configuration.subtitleStyle.googleFont)
+        }
         let cancelFlag = CancelFlag()
         let started = CFAbsoluteTimeGetCurrent()
         return try await withTaskCancellationHandler {
@@ -1187,7 +1190,7 @@ nonisolated private final class StudioFrameCompositor: @unchecked Sendable {
         }
 
         let metrics = KeystrokeCaptionMetrics(cardHeight: layout.cardRect.height)
-        let font = Self.captionFont(size: metrics.fontSize)
+        let font = RecordingCaptionRenderer.font(style: SubtitleBarStyle(), size: metrics.fontSize)
         let (modifierText, keyText) = KeystrokeCaptionMetrics.text(for: caption)
 
         let text = NSMutableAttributedString()
@@ -1248,138 +1251,9 @@ nonisolated private final class StudioFrameCompositor: @unchecked Sendable {
     }
 
     private func drawSubtitleBar(at time: TimeInterval, in context: CGContext) {
-        guard let subtitleTimeline,
-              let text = subtitleTimeline.text(at: time) else {
-            return
-        }
-
-        let metrics = SubtitleBarMetrics(canvasSize: canvasSize, style: subtitleStyle)
-        let maximumTextWidth = metrics.maximumTextWidth(canvasWidth: canvasSize.width)
-
-        // On narrow canvases the text wraps into centered lines rather
-        // than shrinking into a full-width sliver; the font only scales
-        // down when even the maximum line count can't hold it.
-        var fontSize = metrics.fontSize
-        var wrappedLines: [CTLine] = []
-        for _ in 0..<3 {
-            let font = Self.captionFont(size: fontSize)
-            let attributed = subtitleAttributedText(plainText: text, at: time, font: font)
-            wrappedLines = Self.wrapLines(attributed, width: maximumTextWidth)
-            if wrappedLines.count <= SubtitleBarMetrics.maximumLineCount || fontSize <= 11 {
-                break
-            }
-            fontSize *= CGFloat(SubtitleBarMetrics.maximumLineCount) / CGFloat(wrappedLines.count)
-        }
-        guard !wrappedLines.isEmpty else { return }
-
-        var ascent: CGFloat = 0
-        var descent: CGFloat = 0
-        var leading: CGFloat = 0
-        let lineWidths = wrappedLines.map {
-            CGFloat(CTLineGetTypographicBounds($0, &ascent, &descent, &leading))
-        }
-        guard let widestLine = lineWidths.max(), widestLine > 0 else { return }
-        let lineAdvance = (ascent + descent) * SubtitleBarMetrics.lineSpacingFactor
-        let textHeight = ascent + descent + lineAdvance * CGFloat(wrappedLines.count - 1)
-
-        let barSize = CGSize(
-            width: widestLine + metrics.paddingHorizontal * 2,
-            height: textHeight + metrics.paddingVertical * 2
-        )
-        let barCenterY = canvasSize.height * CGFloat(subtitleStyle.clampedVerticalPosition)
-        let origin = CGPoint(
-            x: canvasSize.width / 2 - barSize.width / 2,
-            y: barCenterY - barSize.height / 2
-        )
-        let barRect = flipped(CGRect(origin: origin, size: barSize))
-
-        context.saveGState()
-        let radius = min(metrics.cornerRadius, barRect.height / 2)
-        context.addPath(CGPath(
-            roundedRect: barRect,
-            cornerWidth: radius,
-            cornerHeight: radius,
-            transform: nil
-        ))
-        context.setFillColor(CGColor(gray: 0, alpha: SubtitleBarMetrics.backgroundAlpha))
-        context.fillPath()
-
-        context.textMatrix = .identity
-        // The CG context is bottom-up, so the first wrapped line sits at
-        // the top of the bar and subsequent lines step downward.
-        let firstBaseline = barRect.maxY - metrics.paddingVertical - ascent
-        for (index, wrappedLine) in wrappedLines.enumerated() {
-            context.textPosition = CGPoint(
-                x: barRect.midX - lineWidths[index] / 2,
-                y: firstBaseline - lineAdvance * CGFloat(index)
-            )
-            CTLineDraw(wrappedLine, context)
-        }
-        context.restoreGState()
-    }
-
-    /// Word-wraps an attributed string into CTLines within a width.
-    private static func wrapLines(
-        _ attributed: NSAttributedString,
-        width: CGFloat
-    ) -> [CTLine] {
-        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
-        let path = CGPath(
-            rect: CGRect(x: 0, y: 0, width: max(24, width), height: 100_000),
-            transform: nil
-        )
-        let frame = CTFramesetterCreateFrame(
-            framesetter,
-            CFRange(location: 0, length: attributed.length),
-            path,
-            nil
-        )
-        return (CTFrameGetLines(frame) as? [CTLine]) ?? []
-    }
-
-    /// The bar's text: karaoke-colored words when word timings exist and
-    /// the style asks for them, the plain cue text otherwise. Colors match
-    /// StudioSubtitleBarView exactly.
-    private func subtitleAttributedText(
-        plainText: String,
-        at time: TimeInterval,
-        font: CTFont
-    ) -> NSAttributedString {
-        let fontKey = NSAttributedString.Key(kCTFontAttributeName as String)
-        let colorKey = NSAttributedString.Key(kCTForegroundColorAttributeName as String)
-
-        guard subtitleStyle.highlightsSpokenWord,
-              let karaokeTimeline,
-              let karaokeLine = karaokeTimeline.line(at: time),
-              !karaokeLine.words.isEmpty else {
-            return NSAttributedString(string: plainText, attributes: [
-                fontKey: font,
-                colorKey: CGColor(gray: 1, alpha: 1)
-            ])
-        }
-
-        let text = NSMutableAttributedString()
-        for index in karaokeLine.words.indices {
-            let color: CGColor
-            if index == karaokeLine.activeIndex {
-                color = SubtitleBarMetrics.karaokeAccent
-            } else if index < karaokeLine.spokenCount {
-                color = CGColor(gray: 1, alpha: 1)
-            } else {
-                color = CGColor(gray: 1, alpha: SubtitleBarMetrics.karaokeUpcomingAlpha)
-            }
-            text.append(NSAttributedString(
-                string: karaokeLine.textPiece(at: index),
-                attributes: [fontKey: font, colorKey: color]
-            ))
-        }
-        return text
-    }
-
-    private static func captionFont(size: CGFloat) -> CTFont {
-        let descriptor = NSFont.systemFont(ofSize: size, weight: .semibold).fontDescriptor
-        let rounded = descriptor.withDesign(.rounded) ?? descriptor
-        return CTFontCreateWithFontDescriptor(rounded as CTFontDescriptor, size, nil)
+        guard let text = subtitleTimeline?.text(at: time) else { return }
+        RecordingCaptionRenderer.draw(text: text, karaoke: karaokeTimeline?.line(at: time),
+                                      style: subtitleStyle, canvasSize: canvasSize, in: context)
     }
 
     private func artwork(

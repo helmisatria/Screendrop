@@ -71,8 +71,7 @@ nonisolated struct RecordingSubtitleCue: Codable, Sendable, Equatable, Identifia
     }
 }
 
-/// User-adjustable subtitle appearance. The bar is always center-locked
-/// horizontally; only its height position and text size are editable.
+/// Shared caption appearance for the preview and exported video.
 nonisolated struct SubtitleBarStyle: Sendable, Equatable {
     static let verticalRange: ClosedRange<Double> = 0.1...0.95
     static let fontScaleRange: ClosedRange<Double> = 0.6...1.8
@@ -86,6 +85,11 @@ nonisolated struct SubtitleBarStyle: Sendable, Equatable {
     /// Karaoke mode: the word being spoken renders in the accent color.
     /// Needs word-level timings; the bar falls back to plain cues without.
     var highlightsSpokenWord: Bool = false
+    var googleFont: RecordingGoogleFont?
+    var textColor = CaptionColor(red: 1, green: 1, blue: 1)
+    var backgroundColor = CaptionColor(red: 0, green: 0, blue: 0, alpha: 0.78)
+    var highlightColor = CaptionColor(red: 1, green: 0.84, blue: 0.04)
+    var highlightBackgroundColor = CaptionColor(red: 0, green: 0, blue: 0, alpha: 0)
 
     var clampedVerticalPosition: Double {
         min(max(verticalPosition, Self.verticalRange.lowerBound), Self.verticalRange.upperBound)

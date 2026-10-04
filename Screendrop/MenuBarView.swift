@@ -17,6 +17,12 @@ struct MenuBarView: View {
 
     var body: some View {
         Group {
+            Button("Home", systemImage: "house") {
+                HomeWindowController.show()
+            }
+
+            Divider()
+
             Button {
                 CaptureCoordinator.shared.captureFullscreen()
             } label: {

@@ -1115,71 +1115,38 @@ private struct StudioKeystrokeCaptionView: View {
     }
 }
 
-/// The narration subtitle bar: rounded black bar, white text, center-locked
-/// horizontally at the style's vertical position on the full canvas
-/// (background included). Geometry comes from SubtitleBarMetrics so the
-/// exporter draws the identical bar.
+/// Uses the same Core Text layout and drawing as the exported video.
 private struct StudioSubtitleBarView: View {
     let text: String
     var karaokeLine: KaraokeTimeline.Line?
     let style: SubtitleBarStyle
     let canvasSize: CGSize
+    @State private var fontError: String?
 
     var body: some View {
-        let metrics = SubtitleBarMetrics(canvasSize: canvasSize, style: style)
-
-        barText
-            .font(.system(size: metrics.fontSize, weight: .semibold, design: .rounded))
-            // Long lines wrap into centered lines on narrow canvases,
-            // matching the exporter's framesetter layout; the scale
-            // factor only kicks in past the shared line cap.
-            .lineLimit(SubtitleBarMetrics.maximumLineCount)
-            .multilineTextAlignment(.center)
-            .lineSpacing(metrics.fontSize * (SubtitleBarMetrics.lineSpacingFactor - 1))
-            .minimumScaleFactor(0.4)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, metrics.paddingHorizontal)
-            .padding(.vertical, metrics.paddingVertical)
-            .background(
-                RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
-                    .fill(.black.opacity(SubtitleBarMetrics.backgroundAlpha))
-            )
-            // Invisible width cap: constrains where the text wraps while
-            // the pill above hugs the text, so the bar never spans the
-            // canvas.
-            .frame(
-                maxWidth: metrics.maximumTextWidth(canvasWidth: canvasSize.width)
-                    + metrics.paddingHorizontal * 2
-            )
-            .position(
-                x: canvasSize.width / 2,
-                y: canvasSize.height * CGFloat(style.clampedVerticalPosition)
-            )
-            .frame(width: canvasSize.width, height: canvasSize.height)
-            .allowsHitTesting(false)
-    }
-
-    /// Plain white cue text, or karaoke-colored words matching the
-    /// exporter's palette exactly (SubtitleBarMetrics.karaoke*).
-    private var barText: Text {
-        guard let karaokeLine, !karaokeLine.words.isEmpty else {
-            return Text(text).foregroundStyle(.white)
-        }
-        var combined = Text(verbatim: "")
-        for index in karaokeLine.words.indices {
-            let color: Color
-            if index == karaokeLine.activeIndex {
-                color = Color(cgColor: SubtitleBarMetrics.karaokeAccent)
-            } else if index < karaokeLine.spokenCount {
-                color = .white
-            } else {
-                color = .white.opacity(SubtitleBarMetrics.karaokeUpcomingAlpha)
+        let ready = RecordingGoogleFonts.shared.isReady(style.googleFont)
+        Canvas { graphics, size in
+            guard ready else { return }
+            graphics.withCGContext { context in
+                context.translateBy(x: 0, y: size.height)
+                context.scaleBy(x: 1, y: -1)
+                RecordingCaptionRenderer.draw(text: text, karaoke: karaokeLine, style: style,
+                                              canvasSize: size, in: context)
             }
-            let piece = Text(verbatim: karaokeLine.textPiece(at: index))
-                .foregroundStyle(color)
-            combined = combined + piece
         }
-        return combined
+        .frame(width: canvasSize.width, height: canvasSize.height)
+        .overlay(alignment: .bottom) {
+            if !ready {
+                Text(fontError ?? "Loading caption font…")
+                    .font(.caption).padding(8).background(.regularMaterial, in: Capsule())
+            }
+        }
+        .allowsHitTesting(false)
+        .task(id: style.googleFont) {
+            fontError = nil
+            do { try await RecordingGoogleFonts.shared.prepare(style.googleFont) }
+            catch { fontError = "Caption font unavailable. Retry in Caption Style." }
+        }
     }
 }
 
@@ -4119,34 +4086,57 @@ private struct StudioInspector: View {
         let verticalRange = SubtitleBarStyle.verticalRange
         let fontScaleRange = SubtitleBarStyle.fontScaleRange
         return VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
-            InspectorFieldPair {
-                InspectorSlider(
-                    "Position",
-                    value: Binding(
-                        get: { CGFloat(model.subtitleStyle.verticalPosition) },
-                        set: { model.subtitleStyle.verticalPosition = Double($0) }
-                    ),
-                    range: CGFloat(verticalRange.lowerBound)...CGFloat(verticalRange.upperBound),
-                    format: .percent()
-                )
-            } trailing: {
-                InspectorSlider(
-                    "Size",
-                    value: Binding(
-                        get: { CGFloat(model.subtitleStyle.fontScale) },
-                        set: { model.subtitleStyle.fontScale = Double($0) }
-                    ),
-                    range: CGFloat(fontScaleRange.lowerBound)...CGFloat(fontScaleRange.upperBound),
-                    format: .magnification(fractionDigits: 1)
-                )
-            }
+            InspectorSlider(
+                "Position",
+                value: Binding(
+                    get: { CGFloat(model.subtitleStyle.verticalPosition) },
+                    set: {
+                        var style = model.subtitleStyle
+                        style.verticalPosition = Double($0)
+                        model.setSubtitleStyle(style)
+                    }
+                ),
+                range: CGFloat(verticalRange.lowerBound)...CGFloat(verticalRange.upperBound),
+                format: .percent()
+            )
+
+            InspectorSlider(
+                "Text Size",
+                value: Binding(
+                    get: { CGFloat(model.subtitleStyle.fontScale) },
+                    set: {
+                        var style = model.subtitleStyle
+                        style.fontScale = Double($0)
+                        model.setSubtitleStyle(style)
+                    }
+                ),
+                range: CGFloat(fontScaleRange.lowerBound)...CGFloat(fontScaleRange.upperBound),
+                format: .magnification(fractionDigits: 1)
+            )
 
             if model.hasTranscriptWords {
-                InspectorToggleRow(
-                    "Highlight spoken word",
-                    isOn: $model.subtitleStyle.highlightsSpokenWord
-                )
+                HStack(spacing: 8) {
+                    Text("Highlight spoken word")
+                        .font(.inspectorLabel)
+                        .foregroundStyle(.primary.opacity(0.82))
+
+                    Spacer(minLength: 8)
+
+                    Toggle(
+                        "Highlight spoken word",
+                        isOn: Binding(get: { model.subtitleStyle.highlightsSpokenWord }, set: {
+                            var style = model.subtitleStyle
+                            style.highlightsSpokenWord = $0
+                            model.setSubtitleStyle(style)
+                        })
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                }
             }
+
+            RecordingCaptionStyleControls(model: model)
 
             subtitleList
 

@@ -42,12 +42,14 @@ struct ScreendropApp: App {
         
         WindowGroup("Screendrop Annotate", id: "ANNOTATION_EDITOR", for: URL.self) { value in
             AnnotationEditorWindow(url: value)
+                .onWindowChange { AppEntryCoordinator.shared.registerEditor($0) }
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 1100, height: 760)
 
         WindowGroup("Screendrop Recording Editor", id: "VIDEO_EDITOR", for: URL.self) { value in
             RecordingStudioWindow(url: value)
+                .onWindowChange { AppEntryCoordinator.shared.registerEditor($0) }
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 1360, height: 860)
@@ -57,6 +59,11 @@ struct ScreendropApp: App {
     private func configurePreviewPresentation() {
         CaptureLibraryModel.shared.installOpener { [openWindow] in
             openWindow(id: "CAPTURE_LIBRARY")
+        }
+        HomeWindowController.openFile = { [openWindow] url in
+            let isImage = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+            let editorURL = isImage ? ScreenshotHistoryStore.shared.importScreenshot(from: url) : url
+            openWindow(id: isImage ? "ANNOTATION_EDITOR" : "VIDEO_EDITOR", value: editorURL)
         }
         PreviewPanelPresenter.shared.onAnnotate = { [openWindow] url in
             openWindow(id: "ANNOTATION_EDITOR", value: url)
@@ -160,8 +167,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Library. Login/service launches keep the existing quiet menu-bar mode.
         DispatchQueue.main.async { [weak self] in
             guard let self, !launchedInBackground, !self.openedFilesAtLaunch else { return }
-            CaptureLibraryModel.shared.show()
+            AppEntryCoordinator.shared.show()
         }
+    }
+
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let launchKind = event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue
+        guard launchKind != keyAELaunchedAsLogInItem,
+              launchKind != keyAELaunchedAsServiceItem else { return false }
+        DispatchQueue.main.async { AppEntryCoordinator.shared.show() }
+        return false
     }
 
     /// Finder "Open With" / `open -a Screendrop file.png` entry point.
@@ -174,9 +190,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onOpenFiles(urls)
     }
 
-    /// Finder, Spotlight and the Dock all reopen the same Library window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        CaptureLibraryModel.shared.show()
+        AppEntryCoordinator.shared.show()
         return false
     }
 

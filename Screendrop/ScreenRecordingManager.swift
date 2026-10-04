@@ -136,6 +136,11 @@ final class ScreenRecordingManager {
         state != .idle
     }
 
+    func showRecordingControls() {
+        guard isActive else { return }
+        RecordingControlPresenter.shared.show(displayID: displayID)
+    }
+
     var formattedElapsedTime: String {
         let totalSeconds = max(0, Int(elapsedTime.rounded(.down)))
         let minutes = totalSeconds / 60
