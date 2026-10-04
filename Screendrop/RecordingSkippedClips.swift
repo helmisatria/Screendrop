@@ -117,7 +117,8 @@ nonisolated struct RecordingSkippedClips: Equatable, Sendable {
                     clips.append(RecordingAudioClipSegment(
                         id: audio.id,
                         sourceStart: audio.sourceTime(at: start), sourceEnd: audio.sourceTime(at: end),
-                        timelineStart: output.lowerBound + start - visible.lowerBound, speed: audio.speed
+                        timelineStart: output.lowerBound + start - visible.lowerBound, speed: audio.speed,
+                        gainDB: audio.gainDB
                     ))
                 }
             }

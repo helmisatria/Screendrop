@@ -1103,6 +1103,42 @@ final class RecordingStudioModel {
         scheduleProjectSave()
     }
 
+    /// Once a track is split, the volume control edits the selected clip
+    /// instead of the whole track.
+    private func volumeClipID(for kind: RecordingAudioTrackKind) -> UUID? {
+        guard selectedAudioTrackKind == kind,
+              customizedAudioTrackKinds.contains(kind),
+              let selectedAudioClipID,
+              let edit = audioTrackEdits.first(where: { $0.kind == kind }),
+              edit.clips.count > 1,
+              edit.clip(id: selectedAudioClipID) != nil else { return nil }
+        return selectedAudioClipID
+    }
+
+    func volumeEditsClip(for kind: RecordingAudioTrackKind) -> Bool {
+        volumeClipID(for: kind) != nil
+    }
+
+    func volumeGainDB(for kind: RecordingAudioTrackKind) -> Double {
+        guard let id = volumeClipID(for: kind) else { return audioGainDB(for: kind) }
+        return audioTrackEdits.first { $0.kind == kind }?.clip(id: id)?.gainDB ?? 0
+    }
+
+    func setVolumeGainDB(_ gainDB: Double, for kind: RecordingAudioTrackKind) {
+        guard let id = volumeClipID(for: kind),
+              let index = audioTrackEdits.firstIndex(where: { $0.kind == kind }),
+              var clip = audioTrackEdits[index].clip(id: id) else {
+            setAudioGainDB(gainDB, for: kind)
+            return
+        }
+        let gainDB = Self.clampedAudioGain(gainDB)
+        guard abs(clip.gainDB - gainDB) > 0.000_1 else { return }
+        clip.gainDB = gainDB
+        audioTrackEdits[index] = audioTrackEdits[index].replacing(clip)
+        applyRecordedAudioMix()
+        scheduleProjectSave()
+    }
+
     func autoAdjustVolume(for kind: RecordingAudioTrackKind) {
         guard replacementAudio == nil,
               let gainDB = recordedAudioTracks.first(where: { $0.kind == kind })?

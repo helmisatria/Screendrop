@@ -2369,7 +2369,7 @@ private struct StudioAudioWaveformLane: View {
                         }
                         let sourceTime = clip.sourceTime(at: editorTime)
                         let sourcePeak = min(max(waveform.peak(at: sourceTime), 0), 1)
-                        let adjustedPeak = min(sourcePeak * gain, 1)
+                        let adjustedPeak = min(sourcePeak * gain * Float(pow(10, clip.gainDB / 20)), 1)
                         let sourceHeight = max(CGFloat(sourcePeak) * maximumHeight, 0.5)
                         let adjustedHeight = max(CGFloat(adjustedPeak) * maximumHeight, 0.5)
 
@@ -3817,7 +3817,8 @@ private struct StudioInspector: View {
 
     private func selectedAudioControls(for track: RecordingAudioTrack) -> some View {
         let recordedAudioIsActive = model.replacementAudio == nil
-        let gainDB = model.audioGainDB(for: track.kind)
+        let editsClip = model.volumeEditsClip(for: track.kind)
+        let gainDB = model.volumeGainDB(for: track.kind)
         return VStack(alignment: .leading, spacing: InspectorMetrics.rowSpacing) {
             if let clip = model.selectedAudioClip {
                 HStack(spacing: 8) {
@@ -3840,10 +3841,10 @@ private struct StudioInspector: View {
             }
 
             InspectorSlider(
-                "Volume",
+                editsClip ? "Clip Volume" : "Volume",
                 value: Binding(
-                    get: { CGFloat(model.audioGainDB(for: track.kind)) },
-                    set: { model.setAudioGainDB(Double($0), for: track.kind) }
+                    get: { CGFloat(model.volumeGainDB(for: track.kind)) },
+                    set: { model.setVolumeGainDB(Double($0), for: track.kind) }
                 ),
                 range: CGFloat(RecordingAudioGainLimits.minimumDB)...CGFloat(RecordingAudioGainLimits.maximumDB),
                 format: .audioVolumePercent()
@@ -3851,7 +3852,7 @@ private struct StudioInspector: View {
             .disabled(!recordedAudioIsActive)
 
             HStack(spacing: 8) {
-                Text("100% = original")
+                Text(editsClip ? "100% = track volume" : "100% = original")
                 Spacer(minLength: 8)
                 Text(InspectorValueFormat.decibels().displayString(for: CGFloat(gainDB)))
                     .monospacedDigit()
@@ -3866,15 +3867,17 @@ private struct StudioInspector: View {
                 .disabled(!recordedAudioIsActive || track.waveform == nil)
 
                 InspectorActionButton("Reset", systemImage: "arrow.counterclockwise") {
-                    model.resetAudioGain(for: track.kind)
+                    model.setVolumeGainDB(0, for: track.kind)
                 }
-                .disabled(!recordedAudioIsActive || model.audioGainDB(for: track.kind) == 0)
+                .disabled(!recordedAudioIsActive || gainDB == 0)
             }
 
             Text(
-                recordedAudioIsActive
-                    ? "Auto Adjust sets one level for the whole track. It ignores silence and does not duck other audio."
-                    : "The replacement soundtrack is active, so recorded-track volume is bypassed."
+                !recordedAudioIsActive
+                    ? "The replacement soundtrack is active, so recorded-track volume is bypassed."
+                    : editsClip
+                    ? "Clip Volume changes only the selected clip. Auto Adjust still sets the whole track."
+                    : "Auto Adjust sets one level for the whole track. It ignores silence and does not duck other audio."
             )
             .font(.inspectorLabel)
             .foregroundStyle(.secondary)
